@@ -1,7 +1,6 @@
 # StockFlow
 
-Aplicación web hecha con Spring Boot 4.1 y Java 21. Por ahora expone un endpoint de salud
-para comprobar que el servidor está en marcha.
+StockFlow utiliza Spring Boot 4.1 y Java 21 para administrar inventario y compras. Por ahora expone un endpoint de salud
 
 ## Requisitos
 
