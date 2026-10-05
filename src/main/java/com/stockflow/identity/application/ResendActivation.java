@@ -22,7 +22,11 @@ public class ResendActivation {
         this.clock = clock;
     }
 
-    /** No revela si la cuenta existe: para inexistentes o ya activas no hace nada. */
+    /**
+     * No revela si la cuenta existe: para inexistentes o ya activas no hace nada. Bloquea la fila del usuario
+     * pendiente antes de invalidar/emitir, de modo que dos reenvíos, o un reenvío y una activación, se
+     * ejecutan uno tras otro y nunca quedan dos tokens utilizables ni un token nuevo para una cuenta ACTIVE.
+     */
     @Transactional
     public void resend(String email) {
         String normalized = EmailNormalizer.normalize(email);
@@ -30,7 +34,7 @@ public class ResendActivation {
             throw new InvalidInputException("email", "must be a valid email address");
         }
         Instant now = clock.instant();
-        users.findPendingIdByEmail(normalized).ifPresent(userId -> {
+        users.lockPendingIdByEmail(normalized).ifPresent(userId -> {
             tokens.invalidatePending(userId, now);
             issuer.issue(userId, normalized, now);
         });

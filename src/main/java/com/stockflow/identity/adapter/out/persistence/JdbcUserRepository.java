@@ -39,9 +39,21 @@ class JdbcUserRepository implements UserRepository {
     }
 
     @Override
-    public Optional<UUID> findPendingIdByEmail(String emailNormalized) {
-        return jdbc.sql("SELECT id FROM users WHERE email_normalized = :email AND account_status = 'PENDING_ACTIVATION'")
+    public Optional<UUID> lockPendingIdByEmail(String emailNormalized) {
+        return jdbc.sql("""
+                SELECT id FROM users
+                WHERE email_normalized = :email AND account_status = 'PENDING_ACTIVATION'
+                FOR UPDATE
+                """)
                 .param("email", emailNormalized)
+                .query(UUID.class)
+                .optional();
+    }
+
+    @Override
+    public void lockById(UUID userId) {
+        jdbc.sql("SELECT id FROM users WHERE id = :id FOR UPDATE")
+                .param("id", userId)
                 .query(UUID.class)
                 .optional();
     }

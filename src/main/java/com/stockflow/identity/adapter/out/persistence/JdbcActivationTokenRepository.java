@@ -32,6 +32,14 @@ class JdbcActivationTokenRepository implements ActivationTokenRepository {
                 .update();
     }
 
+    @Override
+    public Optional<UUID> findOwner(String tokenHash) {
+        return jdbc.sql("SELECT user_id FROM one_time_tokens WHERE purpose = 'ACTIVATION' AND token_hash = :hash")
+                .param("hash", tokenHash)
+                .query(UUID.class)
+                .optional();
+    }
+
     /** Un único UPDATE condicionado: dos peticiones concurrentes con el mismo token no pueden consumirlo ambas. */
     @Override
     public Optional<UUID> consume(String tokenHash, Instant now) {
