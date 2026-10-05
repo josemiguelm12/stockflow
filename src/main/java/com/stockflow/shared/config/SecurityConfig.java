@@ -1,5 +1,8 @@
 package com.stockflow.shared.config;
 
+import com.stockflow.identity.adapter.in.web.SessionAuthenticationFilter;
+import com.stockflow.identity.application.AuthenticateSession;
+import com.stockflow.shared.web.RateLimitFilter;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -13,26 +16,35 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.web.filter.CorsFilter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.util.List;
 
 @Configuration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-@EnableConfigurationProperties(CorsProperties.class)
+@EnableConfigurationProperties({CorsProperties.class, RateLimitProperties.class})
 public class SecurityConfig {
 
     private static final String UNAUTHORIZED_BODY =
             "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401}";
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, AuthenticationEntryPoint entryPoint) {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, AuthenticationEntryPoint entryPoint,
+                                            AuthenticateSession authenticateSession,
+                                            RateLimitProperties rateLimits, Clock clock) {
         http
                 .cors(Customizer.withDefaults())
+                // Tras CORS (el preflight no cuenta ni recibe 429 sin cabeceras CORS) y antes de autenticar.
+                .addFilterAfter(new RateLimitFilter(rateLimits.globalPerMinute(), rateLimits.loginPerMinute(), clock),
+                        CorsFilter.class)
+                .addFilterBefore(new SessionAuthenticationFilter(authenticateSession), AuthorizationFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .httpBasic(AbstractHttpConfigurer::disable)
@@ -49,7 +61,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/activate",
-                                "/api/v1/auth/resend-activation").permitAll()
+                                "/api/v1/auth/resend-activation",
+                                "/api/v1/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").authenticated()
                         .anyRequest().denyAll());
         return http.build();
     }

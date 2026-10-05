@@ -2,6 +2,12 @@ package com.stockflow.identity.adapter.in.web;
 
 import com.stockflow.HealthController;
 import com.stockflow.identity.application.ActivateAccount;
+import com.stockflow.identity.application.AuthenticateSession;
+import com.stockflow.identity.application.AuthenticatedUser;
+import com.stockflow.identity.application.Login;
+import com.stockflow.identity.application.LoginResult;
+import com.stockflow.identity.application.Logout;
+import com.stockflow.support.WebTestClock;
 import com.stockflow.identity.application.EmailAlreadyRegisteredException;
 import com.stockflow.identity.application.InvalidActivationTokenException;
 import com.stockflow.identity.application.InvalidInputException;
@@ -17,6 +23,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,8 +42,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = {AuthController.class, ActivationLandingController.class, HealthController.class})
-@Import(SecurityConfig.class)
-@TestPropertySource(properties = "stockflow.cors.allowed-origins=http://localhost:4200")
+@Import({SecurityConfig.class, WebTestClock.class})
+@TestPropertySource(properties = {
+        "stockflow.cors.allowed-origins=http://localhost:4200",
+        "stockflow.rate-limit.global-per-minute=100000",
+        "stockflow.rate-limit.login-per-minute=100000"
+})
 class AuthWebTest {
 
     private static final String CREDENTIALS = "{\"email\":\"user@example.test\",\"password\":\"Passw0rd-secret\"}";
@@ -49,6 +60,12 @@ class AuthWebTest {
     private ActivateAccount activateAccount;
     @MockitoBean
     private ResendActivation resendActivation;
+    @MockitoBean
+    private Login login;
+    @MockitoBean
+    private Logout logout;
+    @MockitoBean
+    private AuthenticateSession authenticateSession;
 
     @Test
     void registerReturns201WithoutHashTokenOrPassword() throws Exception {
@@ -151,7 +168,7 @@ class AuthWebTest {
         mvc.perform(get("/api/health")).andExpect(status().isOk());
         mvc.perform(get("/api/v1/auth/register")).andExpect(status().isUnauthorized());
         mvc.perform(delete("/api/v1/auth/register")).andExpect(status().isUnauthorized());
-        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+        mvc.perform(post("/api/v1/auth/refresh").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
                 .andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/admin/users")).andExpect(status().isUnauthorized());
         mvc.perform(post("/activate")).andExpect(status().isUnauthorized());
@@ -168,5 +185,94 @@ class AuthWebTest {
 
         assertThat(csp).contains("script-src 'sha256-").contains("connect-src 'self'").contains("frame-ancestors 'none'");
         verifyNoInteractions(activateAccount, registerUser, resendActivation);
+    }
+
+    // ---- T02: login, /me y logout ----
+
+    private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID SESSION_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+
+    @Test
+    void loginReturnsTheTokenEnvelope() throws Exception {
+        when(login.login("user@example.test", "Passw0rd-secret"))
+                .thenReturn(new LoginResult.Authenticated("jwt-value", 900));
+
+        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("jwt-value"))
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.expiresIn").value(900));
+    }
+
+    @Test
+    void loginRejectionsAreControlled() throws Exception {
+        when(login.login(any(), any())).thenReturn(new LoginResult.InvalidCredentials());
+        String first = mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"other@example.test\",\"password\":\"Another1-pass\"}"))
+                .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
+        assertThat(first).isEqualTo(second);
+
+        when(login.login(any(), any())).thenReturn(new LoginResult.AccountNotActive());
+        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content(CREDENTIALS))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"email\":\"\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void meReturnsOnlyIdEmailAndRoleForAValidBearer() throws Exception {
+        when(authenticateSession.authenticate("valid-token"))
+                .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "STANDARD", SESSION_ID)));
+
+        String body = mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer valid-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(USER_ID.toString()))
+                .andExpect(jsonPath("$.email").value("user@example.test"))
+                .andExpect(jsonPath("$.role").value("STANDARD"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain(SESSION_ID.toString());
+    }
+
+    @Test
+    void protectedRoutesRejectMissingInvalidAndNonBearerCredentials() throws Exception {
+        when(authenticateSession.authenticate("valid-token"))
+                .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "STANDARD", SESSION_ID)));
+        when(authenticateSession.authenticate("bad-token")).thenReturn(Optional.empty());
+
+        mvc.perform(get("/api/v1/auth/me")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer bad-token")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer ")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Basic dXNlcjpwYXNz")).andExpect(status().isUnauthorized());
+        // Ni query string ni cookie son una fuente válida del token.
+        mvc.perform(get("/api/v1/auth/me").param("access_token", "valid-token")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").cookie(new jakarta.servlet.http.Cookie("access_token", "valid-token")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/auth/logout")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void logoutRevokesTheSessionOfTheBearer() throws Exception {
+        when(authenticateSession.authenticate("valid-token"))
+                .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "STANDARD", SESSION_ID)));
+
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer valid-token"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        verify(logout).logout(SESSION_ID);
+    }
+
+    @Test
+    void anAuthenticatedUserStillCannotReachUnlistedRoutes() throws Exception {
+        when(authenticateSession.authenticate("valid-token"))
+                .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "ADMIN", SESSION_ID)));
+
+        mvc.perform(get("/api/v1/admin/users").header("Authorization", "Bearer valid-token"))
+                .andExpect(status().isForbidden());
     }
 }
