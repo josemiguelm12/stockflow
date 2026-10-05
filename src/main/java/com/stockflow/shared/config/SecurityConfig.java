@@ -25,6 +25,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.util.Map;
 import java.util.List;
 
 @Configuration
@@ -42,7 +43,11 @@ public class SecurityConfig {
         http
                 .cors(Customizer.withDefaults())
                 // Tras CORS (el preflight no cuenta ni recibe 429 sin cabeceras CORS) y antes de autenticar.
-                .addFilterAfter(new RateLimitFilter(rateLimits.globalPerMinute(), rateLimits.loginPerMinute(), clock),
+                .addFilterAfter(new RateLimitFilter(rateLimits.globalPerMinute(), Map.of(
+                        RateLimitFilter.LOGIN_PATH, rateLimits.loginPerMinute(),
+                        RateLimitFilter.PASSWORD_FORGOT_PATH, rateLimits.passwordForgotPerMinute(),
+                        RateLimitFilter.PASSWORD_RESET_PATH, rateLimits.passwordResetPerMinute(),
+                        RateLimitFilter.PASSWORD_CHANGE_PATH, rateLimits.passwordChangePerMinute()), clock),
                         CorsFilter.class)
                 .addFilterBefore(new SessionAuthenticationFilter(authenticateSession), AuthorizationFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
@@ -57,14 +62,17 @@ public class SecurityConfig {
                         .referrerPolicy(r -> r.policy(ReferrerPolicy.NO_REFERRER))
                         .contentSecurityPolicy(c -> c.policyDirectives("default-src 'none'; frame-ancestors 'none'")))
                 .authorizeHttpRequests(a -> a
-                        .requestMatchers(HttpMethod.GET, "/api/health", "/activate").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/health", "/activate", "/reset-password").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/activate",
                                 "/api/v1/auth/resend-activation",
-                                "/api/v1/auth/login").permitAll()
+                                "/api/v1/auth/login",
+                                "/api/v1/auth/password/forgot",
+                                "/api/v1/auth/password/reset").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout", "/api/v1/auth/password/change")
+                        .authenticated()
                         .anyRequest().denyAll());
         return http.build();
     }

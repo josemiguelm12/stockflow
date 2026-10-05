@@ -42,6 +42,14 @@ class JdbcSessionRepository implements SessionRepository {
     }
 
     @Override
+    public void revokeAllForUser(UUID userId, Instant now) {
+        jdbc.sql("UPDATE auth_sessions SET revoked_at = :now WHERE user_id = :userId AND revoked_at IS NULL")
+                .param("userId", userId)
+                .param("now", utc(now))
+                .update();
+    }
+
+    @Override
     public Optional<AuthenticatedUser> findActive(UUID sessionId, UUID userId, Instant now) {
         return jdbc.sql("""
                 SELECT u.id, u.email_normalized, u.role

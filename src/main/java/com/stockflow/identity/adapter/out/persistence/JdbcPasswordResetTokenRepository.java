@@ -1,6 +1,6 @@
 package com.stockflow.identity.adapter.out.persistence;
 
-import com.stockflow.identity.application.ActivationTokenRepository;
+import com.stockflow.identity.application.PasswordResetTokenRepository;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -9,12 +9,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Repository
-class JdbcActivationTokenRepository implements ActivationTokenRepository {
+class JdbcPasswordResetTokenRepository implements PasswordResetTokenRepository {
 
     private final OneTimeTokenTable table;
 
-    JdbcActivationTokenRepository(JdbcClient jdbc) {
-        this.table = new OneTimeTokenTable(jdbc, "ACTIVATION");
+    JdbcPasswordResetTokenRepository(JdbcClient jdbc) {
+        this.table = new OneTimeTokenTable(jdbc, "PASSWORD_RESET");
     }
 
     @Override

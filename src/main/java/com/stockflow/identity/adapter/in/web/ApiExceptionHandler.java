@@ -2,7 +2,9 @@ package com.stockflow.identity.adapter.in.web;
 
 import com.stockflow.identity.application.EmailAlreadyRegisteredException;
 import com.stockflow.identity.application.InvalidActivationTokenException;
+import com.stockflow.identity.application.InvalidCurrentPasswordException;
 import com.stockflow.identity.application.InvalidInputException;
+import com.stockflow.identity.application.InvalidPasswordResetTokenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -43,6 +45,23 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Invalid activation token");
         problem.setDetail("The activation token is invalid, expired or already used.");
+        return problem;
+    }
+
+    @ExceptionHandler(InvalidPasswordResetTokenException.class)
+    ProblemDetail invalidPasswordResetToken() {
+        // Mismo cuerpo para token desconocido, vencido, usado, invalidado, de otro propósito o de usuario no activo.
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid password reset token");
+        problem.setDetail("The password reset token is invalid, expired or already used.");
+        return problem;
+    }
+
+    @ExceptionHandler(InvalidCurrentPasswordException.class)
+    ProblemDetail invalidCurrentPassword() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid request");
+        problem.setDetail("The password change request was rejected.");
         return problem;
     }
 

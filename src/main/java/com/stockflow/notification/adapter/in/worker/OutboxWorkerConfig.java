@@ -1,7 +1,7 @@
 package com.stockflow.notification.adapter.in.worker;
 
 import com.stockflow.notification.adapter.out.smtp.SmtpEmailSender;
-import com.stockflow.notification.application.ActivationLinkBuilder;
+import com.stockflow.notification.application.EmailTemplates;
 import com.stockflow.notification.application.OutboxDispatcher;
 import com.stockflow.notification.application.OutboundEmailRepository;
 import com.stockflow.notification.application.OutboxPayloadCipher;
@@ -66,9 +66,9 @@ class OutboxWorkerConfig {
 
     @Bean
     OutboxDispatcher outboxDispatcher(OutboundEmailRepository emails, OutboxPayloadCipher cipher,
-                                      ActivationLinkBuilder links,
+                                      EmailTemplates templates,
                                       EmailSender sender, PlatformTransactionManager transactionManager, Clock clock) {
-        return new OutboxDispatcher(emails, cipher, links, sender, transactionManager, clock);
+        return new OutboxDispatcher(emails, cipher, templates, sender, transactionManager, clock);
     }
 
     @Bean

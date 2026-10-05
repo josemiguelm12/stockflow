@@ -11,6 +11,9 @@ public interface SessionRepository {
 
     void revoke(UUID sessionId, Instant now);
 
+    /** Revoca todas las sesiones aún vigentes del usuario (reset o cambio de contraseña). */
+    void revokeAllForUser(UUID userId, Instant now);
+
     /**
      * Usuario dueño de una sesión vigente: la sesión existe, pertenece a ese usuario, no está revocada ni
      * expirada, y el usuario está hoy ACTIVE. Rol y email se leen en esta consulta.
