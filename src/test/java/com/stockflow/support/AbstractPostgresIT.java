@@ -16,6 +16,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
         "stockflow.cors.allowed-origins=http://localhost:4200",
         "stockflow.activation.public-url=http://localhost:8080/activate",
         "stockflow.activation.token-ttl=PT24H",
+        "stockflow.password-reset.public-url=http://localhost:8080/reset-password",
         // Clave solo para pruebas (Base64 de 32 bytes), sin relación con ningún entorno real.
         "stockflow.outbox.encryption-key=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
         "stockflow.outbox.encryption-key-id=test-key-1",
@@ -23,7 +24,10 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
         "stockflow.jwt.secret=" + AbstractPostgresIT.JWT_SECRET,
         // Límites altos: las ITs hacen muchas peticiones desde 127.0.0.1; RateLimitIT los baja a propósito.
         "stockflow.rate-limit.global-per-minute=100000",
-        "stockflow.rate-limit.login-per-minute=100000"
+        "stockflow.rate-limit.login-per-minute=100000",
+        "stockflow.rate-limit.password-forgot-per-minute=100000",
+        "stockflow.rate-limit.password-reset-per-minute=100000",
+        "stockflow.rate-limit.password-change-per-minute=100000"
 })
 public abstract class AbstractPostgresIT {
 

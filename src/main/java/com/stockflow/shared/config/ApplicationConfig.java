@@ -7,7 +7,8 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Clock;
 
 @Configuration
-@EnableConfigurationProperties({ActivationProperties.class, OutboxProperties.class, SmtpProperties.class})
+@EnableConfigurationProperties({ActivationProperties.class, PasswordResetProperties.class, OutboxProperties.class,
+        SmtpProperties.class})
 public class ApplicationConfig {
 
     @Bean

@@ -21,7 +21,6 @@ import java.util.UUID;
 public class OutboxDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxDispatcher.class);
-    private static final String SUBJECT = "Active su cuenta de StockFlow";
 
     public record Result(int sent, int failed) {
     }
@@ -31,16 +30,16 @@ public class OutboxDispatcher {
     private final JsonMapper json = JsonMapper.builder().build();
     private final OutboundEmailRepository emails;
     private final OutboxPayloadCipher cipher;
-    private final ActivationLinkBuilder links;
+    private final EmailTemplates templates;
     private final EmailSender sender;
     private final TransactionTemplate transaction;
     private final Clock clock;
 
-    public OutboxDispatcher(OutboundEmailRepository emails, OutboxPayloadCipher cipher, ActivationLinkBuilder links,
+    public OutboxDispatcher(OutboundEmailRepository emails, OutboxPayloadCipher cipher, EmailTemplates templates,
                             EmailSender sender, PlatformTransactionManager transactionManager, Clock clock) {
         this.emails = emails;
         this.cipher = cipher;
-        this.links = links;
+        this.templates = templates;
         this.sender = sender;
         this.transaction = new TransactionTemplate(transactionManager);
         this.clock = clock;
@@ -69,7 +68,8 @@ public class OutboxDispatcher {
         OutboundEmailRepository.PendingEmail email = next.get();
         try {
             ActivationPayload payload = json.readValue(cipher.decrypt(email.payload()), ActivationPayload.class);
-            sender.send(email.recipient(), SUBJECT, body(links.build(payload.token())));
+            var rendered = templates.render(email.templateKey(), payload.token());
+            sender.send(email.recipient(), rendered.subject(), rendered.body());
         } catch (RuntimeException e) {
             // Solo id y tipo de error: el mensaje podría incluir direcciones o fragmentos del enlace.
             log.warn("Outbound email {} stays PENDING: {}", email.id(), e.getClass().getSimpleName());
@@ -79,10 +79,5 @@ public class OutboxDispatcher {
         emails.markSent(email.id(), clock.instant());
         log.info("Outbound email {} sent", email.id());
         return Outcome.SENT;
-    }
-
-    private static String body(String link) {
-        return "Para activar su cuenta de StockFlow abra este enlace:\n\n" + link
-                + "\n\nSi no solicitó este registro, ignore este mensaje.\n";
     }
 }

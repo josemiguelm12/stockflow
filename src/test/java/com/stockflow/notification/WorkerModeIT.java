@@ -33,6 +33,7 @@ class WorkerModeIT {
                         Map.entry("stockflow.cors.allowed-origins", "http://localhost:4200"),
                         Map.entry("stockflow.activation.public-url", "http://localhost:8080/activate"),
                         Map.entry("stockflow.activation.token-ttl", "PT24H"),
+                        Map.entry("stockflow.password-reset.public-url", "http://localhost:8080/reset-password"),
                         Map.entry("stockflow.outbox.encryption-key", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="),
                         Map.entry("stockflow.outbox.encryption-key-id", "test-key-1"),
                         Map.entry("stockflow.smtp.host", "127.0.0.1"),
@@ -49,6 +50,7 @@ class WorkerModeIT {
             assertThat(context.getBeanNamesForType(Logout.class)).isEmpty();
             assertThat(context.getBeanNamesForType(AuthenticateSession.class)).isEmpty();
             assertThat(context.containsBean("authController")).isFalse();
+            assertThat(context.containsBean("passwordController")).isFalse();
         }
     }
 

@@ -89,9 +89,15 @@ nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí sol
 | `STOCKFLOW_JWT_SECRET` | Secreto HMAC del JWT: Base64 de exactamente 32 bytes aleatorios (obligatorio, solo la API) |
 | `STOCKFLOW_RATE_LIMIT_GLOBAL_PER_MINUTE` | Solicitudes por minuto y por IP a `/api/v1/**`; vacío = `120` (no es un secreto) |
 | `STOCKFLOW_RATE_LIMIT_LOGIN_PER_MINUTE` | Solicitudes por minuto y por IP a `POST /api/v1/auth/login`; vacío = `10` |
+| `STOCKFLOW_PUBLIC_PASSWORD_RESET_URL` | URL pública absoluta de la landing de recuperación, p. ej. `http://localhost:8080/reset-password` (obligatoria, no es un secreto) |
+| `STOCKFLOW_PASSWORD_RESET_TOKEN_TTL` | Vigencia del token de recuperación, duración ISO-8601 positiva; vacío = `PT30M` |
+| `STOCKFLOW_RATE_LIMIT_PASSWORD_FORGOT_PER_MINUTE` | Solicitudes por minuto y por IP a `POST /api/v1/auth/password/forgot`; vacío = `5` |
+| `STOCKFLOW_RATE_LIMIT_PASSWORD_RESET_PER_MINUTE` | Ídem a `POST /api/v1/auth/password/reset`; vacío = `10` |
+| `STOCKFLOW_RATE_LIMIT_PASSWORD_CHANGE_PER_MINUTE` | Ídem a `POST /api/v1/auth/password/change`; vacío = `5` |
 
 Sin las variables `SPRING_DATASOURCE_*`, `STOCKFLOW_CORS_ALLOWED_ORIGINS`, `STOCKFLOW_PUBLIC_ACTIVATION_URL`,
-`STOCKFLOW_ACTIVATION_TOKEN_TTL`, `STOCKFLOW_JWT_SECRET` y las dos del outbox, la aplicación no arranca. Una clave del outbox o un
+`STOCKFLOW_ACTIVATION_TOKEN_TTL`, `STOCKFLOW_PUBLIC_PASSWORD_RESET_URL`, `STOCKFLOW_JWT_SECRET` y las dos del outbox,
+la aplicación no arranca (la URL de recuperación debe ser absoluta, `http` o `https`). Una clave del outbox o un
 secreto JWT que no sea Base64 de 32 bytes también impide el arranque. El worker de correo no necesita
 `STOCKFLOW_JWT_SECRET`. La API arranca sin SMTP; solo el worker lo exige.
 
@@ -105,9 +111,10 @@ Para generar la clave del outbox y el secreto JWT (cada uno distinto):
 openssl rand -base64 32
 ```
 
-Seguridad HTTP: solo `GET /api/health`, `GET /activate`, los tres `POST /api/v1/auth/*` de la sección 7 y
-`POST /api/v1/auth/login` son públicos; `GET /api/v1/auth/me` y `POST /api/v1/auth/logout` exigen Bearer;
-cualquier otra ruta se deniega (401 sin credenciales, 403 con ellas).
+Seguridad HTTP: solo `GET /api/health`, `GET /activate`, `GET /reset-password`, los tres `POST /api/v1/auth/*` de la
+sección 7, `POST /api/v1/auth/login` y `POST /api/v1/auth/password/{forgot,reset}` son públicos;
+`GET /api/v1/auth/me`, `POST /api/v1/auth/logout` y `POST /api/v1/auth/password/change` exigen Bearer; cualquier otra
+ruta se deniega (401 sin credenciales, 403 con ellas).
 
 ## 6. Pruebas
 
@@ -171,10 +178,43 @@ Verificación manual con un SMTP real: registra un correo propio, ejecuta el wor
   credenciales: un fallo mantiene el contador y abre otro bloqueo; un acierto lo limpia. Los intentos de una misma
   cuenta se serializan con un bloqueo de fila, así que solicitudes simultáneas no eluden el umbral.
 - **Rate limiting** (independiente del bloqueo): por IP de la conexión, ventana fija de un minuto; `/api/v1/**`
-  120 por minuto y `POST /api/v1/auth/login` 10 por minuto adicionales. Al superarlo responde `429` con
+  120 por minuto y `POST /api/v1/auth/login` 10 por minuto adicionales (las rutas de contraseña de la sección 9 tienen
+  los suyos, independientes entre sí). Al superarlo responde `429` con
   `Retry-After`. `X-Forwarded-For` se ignora a propósito (es falsificable). `/api/health` y `/activate` quedan fuera.
   **Limitación:** el estado vive en memoria de un solo proceso; con varias instancias o detrás de un
   proxy que oculte la IP real haría falta un almacén distribuido o configurar la IP del cliente, fuera de alcance.
   El estado está acotado a 50 000 IPs: si se llena (p. ej. una inundación de IPs distintas), se descartan las
   ventanas vencidas y, si no basta, las IPs *nuevas* reciben `429` hasta que venza la ventana; los límites de las IPs
   ya registradas nunca se reinician.
+
+## 9. Recuperación y cambio de contraseña
+
+| Método | Ruta | Resultado |
+|---|---|---|
+| POST | `/api/v1/auth/password/forgot` | `{"email"}` → siempre `202` con el mismo cuerpo `{"message":"If the account is eligible, a password reset email will be sent."}`; email mal formado `400` |
+| POST | `/api/v1/auth/password/reset` | `{"token","newPassword"}` → `204`; token inválido, vencido, usado o de otro propósito `400` genérico; contraseña que no cumple la política `400` |
+| POST | `/api/v1/auth/password/change` | Con Bearer, `{"currentPassword","newPassword"}` → `204`; contraseña actual incorrecta `400` genérico; sin Bearer `401` |
+| GET | `/reset-password` | Página mínima con el formulario de nueva contraseña (no cambia estado por GET) |
+
+- **Solicitud (`forgot`):** devuelve exactamente la misma respuesta exista o no la cuenta y esté `ACTIVE`,
+  `PENDING_ACTIVATION` o `DISABLED`. Solo una cuenta `ACTIVE` recibe un token y un correo; para el resto no se muta nada.
+  Una nueva solicitud invalida el token anterior, así que nunca hay más de un token vigente por usuario.
+- **Token:** 32 bytes aleatorios (`SecureRandom`), de un solo uso, vigente 30 minutos por defecto
+  (`STOCKFLOW_PASSWORD_RESET_TOKEN_TTL`; deja de valer en el instante exacto de vencimiento). En la base de datos solo
+  existe su hash SHA-256; el correo lo lleva cifrado (AES-256-GCM) en el outbox. El enlace es
+  `STOCKFLOW_PUBLIC_PASSWORD_RESET_URL#token=...`: el token va en el fragmento, nunca en path ni query.
+- **Correo:** igual que la activación (sección 7): la API solo deja el correo `PENDING` en el outbox y el worker lo envía;
+  si SMTP está apagado, la respuesta no cambia y el correo sigue pendiente. El worker entrega la plantilla de
+  recuperación sin alterar la de activación.
+- **Landing:** lee el token del fragmento, lo borra de la barra de direcciones antes de cualquier petición y solo hace
+  `POST /api/v1/auth/password/reset` cuando el usuario envía el formulario. Un GET (prefetch, escáner de enlaces)
+  nunca consume el token. Se sirve con `Cache-Control: no-store` y una CSP estricta.
+- **Contraseña nueva:** política de siempre (mínimo 8 caracteres, una letra y un número, máximo 72 bytes). Si no la
+  cumple, el token no se consume ni cambia nada.
+- **Tras un reset o un cambio exitoso:** se actualiza el hash BCrypt, se limpia `password_reset_required`, se invalidan los
+  demás tokens de recuperación y se **revocan todas las sesiones del usuario** (incluida la que autorizó `change`);
+  no se crea sesión ni se devuelve JWT: hay que iniciar sesión de nuevo. `change` solo actúa sobre el usuario del
+  Bearer (no acepta un `userId`) y no modifica el contador de fallos ni el bloqueo de login.
+- **Concurrencia:** `forgot`, `reset` y `change` bloquean primero la fila del usuario y después tokens, sesiones y outbox
+  (mismo orden que la activación): dos redenciones del mismo token permiten como máximo un éxito.
+- **Rate limiting:** `forgot` 5, `reset` 10 y `change` 5 por minuto y por IP (configurables), además del límite global.

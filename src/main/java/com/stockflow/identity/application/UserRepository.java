@@ -31,6 +31,22 @@ public interface UserRepository {
     /** Tras un login correcto: contador a 0 y sin bloqueo. */
     void clearLoginFailures(UUID userId, Instant now);
 
+    /**
+     * Bloquea (FOR UPDATE) la fila del usuario ACTIVE con ese email. Si otra transacción la modifica espera y
+     * reevalúa el filtro: una cuenta que mientras tanto dejó de estar ACTIVE ya no coincide. Punto de
+     * serialización de la recuperación de contraseña; requiere una transacción activa.
+     */
+    Optional<UUID> lockActiveIdByEmail(String emailNormalized);
+
+    /**
+     * Bloquea la fila del usuario ACTIVE y devuelve su hash de contraseña actual; vacío si no existe o no está
+     * ACTIVE. Requiere una transacción activa.
+     */
+    Optional<String> lockActivePasswordHash(UUID userId);
+
+    /** Guarda el nuevo hash, limpia password_reset_required y actualiza updated_at. No toca el lockout. */
+    void updatePassword(UUID userId, String passwordHash, Instant now);
+
     /** Pasa PENDING_ACTIVATION a ACTIVE. Devuelve false si el usuario ya no estaba pendiente. */
     boolean activate(UUID userId, Instant now);
 }

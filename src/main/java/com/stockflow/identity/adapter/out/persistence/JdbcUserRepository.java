@@ -104,6 +104,38 @@ class JdbcUserRepository implements UserRepository {
     }
 
     @Override
+    public Optional<UUID> lockActiveIdByEmail(String emailNormalized) {
+        return jdbc.sql("""
+                SELECT id FROM users
+                WHERE email_normalized = :email AND account_status = 'ACTIVE'
+                FOR UPDATE
+                """)
+                .param("email", emailNormalized)
+                .query(UUID.class)
+                .optional();
+    }
+
+    @Override
+    public Optional<String> lockActivePasswordHash(UUID userId) {
+        return jdbc.sql("SELECT password_hash FROM users WHERE id = :id AND account_status = 'ACTIVE' FOR UPDATE")
+                .param("id", userId)
+                .query(String.class)
+                .optional();
+    }
+
+    @Override
+    public void updatePassword(UUID userId, String passwordHash, Instant now) {
+        jdbc.sql("""
+                UPDATE users SET password_hash = :hash, password_reset_required = false, updated_at = :now
+                WHERE id = :id
+                """)
+                .param("id", userId)
+                .param("hash", passwordHash)
+                .param("now", utc(now))
+                .update();
+    }
+
+    @Override
     public boolean activate(UUID userId, Instant now) {
         return jdbc.sql("""
                 UPDATE users

@@ -1,6 +1,6 @@
 package com.stockflow.support;
 
-import com.stockflow.notification.application.ActivationLinkBuilder;
+import com.stockflow.notification.application.EmailTemplates;
 import com.stockflow.notification.application.OutboundEmailRepository;
 import com.stockflow.notification.application.OutboxDispatcher;
 import com.stockflow.notification.application.OutboxPayloadCipher;
@@ -28,8 +28,8 @@ public class IntegrationTestBeans {
 
     @Bean
     OutboxDispatcher testOutboxDispatcher(OutboundEmailRepository emails, OutboxPayloadCipher cipher,
-                                          ActivationLinkBuilder links, RecordingEmailSender sender,
+                                          EmailTemplates templates, RecordingEmailSender sender,
                                           PlatformTransactionManager transactionManager, Clock clock) {
-        return new OutboxDispatcher(emails, cipher, links, sender, transactionManager, clock);
+        return new OutboxDispatcher(emails, cipher, templates, sender, transactionManager, clock);
     }
 }
