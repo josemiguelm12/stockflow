@@ -1,6 +1,7 @@
 package com.stockflow.shared.config;
 
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 @Configuration
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(CorsProperties.class)
 public class SecurityConfig {
 
@@ -43,7 +45,11 @@ public class SecurityConfig {
                         .referrerPolicy(r -> r.policy(ReferrerPolicy.NO_REFERRER))
                         .contentSecurityPolicy(c -> c.policyDirectives("default-src 'none'; frame-ancestors 'none'")))
                 .authorizeHttpRequests(a -> a
-                        .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/health", "/activate").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/auth/register",
+                                "/api/v1/auth/activate",
+                                "/api/v1/auth/resend-activation").permitAll()
                         .anyRequest().denyAll());
         return http.build();
     }
