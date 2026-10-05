@@ -18,15 +18,18 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
         "stockflow.activation.token-ttl=PT24H",
         // Clave solo para pruebas (Base64 de 32 bytes), sin relación con ningún entorno real.
         "stockflow.outbox.encryption-key=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-        "stockflow.outbox.encryption-key-id=test-key-1"
+        "stockflow.outbox.encryption-key-id=test-key-1",
+        // Secreto JWT solo para pruebas (Base64 de 32 bytes distintos de la clave del outbox).
+        "stockflow.jwt.secret=" + AbstractPostgresIT.JWT_SECRET,
+        // Límites altos: las ITs hacen muchas peticiones desde 127.0.0.1; RateLimitIT los baja a propósito.
+        "stockflow.rate-limit.global-per-minute=100000",
+        "stockflow.rate-limit.login-per-minute=100000"
 })
 public abstract class AbstractPostgresIT {
 
-    protected static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+    public static final String JWT_SECRET = "dGVzdC1qd3Qtc2VjcmV0LWZvci1zdG9ja2Zsb3ctMDE=";
 
-    static {
-        POSTGRES.start();
-    }
+    protected static final PostgreSQLContainer POSTGRES = SharedPostgres.CONTAINER;
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
