@@ -80,21 +80,67 @@ nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí sol
 | `SPRING_DATASOURCE_USERNAME` | Usuario de PostgreSQL |
 | `SPRING_DATASOURCE_PASSWORD` | Contraseña de PostgreSQL |
 | `STOCKFLOW_CORS_ALLOWED_ORIGINS` | Orígenes permitidos, separados por comas (sin `*`), p. ej. `http://localhost:4200` |
-| `STOCKFLOW_OUTBOX_ENCRYPTION_KEY` | Base64 de 32 bytes; se usará en una tarea posterior |
-| `STOCKFLOW_OUTBOX_ENCRYPTION_KEY_ID` | Identificador de esa clave; se usará en una tarea posterior |
+| `STOCKFLOW_OUTBOX_ENCRYPTION_KEY` | Clave AES-256 del outbox: Base64 de exactamente 32 bytes |
+| `STOCKFLOW_OUTBOX_ENCRYPTION_KEY_ID` | Identificador no vacío de esa clave (permite rotarla) |
+| `STOCKFLOW_PUBLIC_ACTIVATION_URL` | URL pública de la landing de activación, p. ej. `http://localhost:8080/activate` |
+| `STOCKFLOW_ACTIVATION_TOKEN_TTL` | Vigencia del token de activación, duración ISO-8601 (p. ej. `PT24H`) |
+| `STOCKFLOW_SMTP_HOST`, `STOCKFLOW_SMTP_PORT`, `STOCKFLOW_SMTP_FROM` | Servidor SMTP y remitente; solo los usa el worker |
+| `STOCKFLOW_SMTP_USERNAME`, `STOCKFLOW_SMTP_PASSWORD` | Credenciales SMTP (vacías si el servidor no exige autenticación) |
 
-Sin `SPRING_DATASOURCE_*` ni `STOCKFLOW_CORS_ALLOWED_ORIGINS` la aplicación no arranca.
+Sin las variables `SPRING_DATASOURCE_*`, `STOCKFLOW_CORS_ALLOWED_ORIGINS`, `STOCKFLOW_PUBLIC_ACTIVATION_URL`,
+`STOCKFLOW_ACTIVATION_TOKEN_TTL` y las dos del outbox, la aplicación no arranca. Una clave del outbox que no
+sea Base64 de 32 bytes también impide el arranque. La API arranca sin SMTP; solo el worker lo exige.
 
-Seguridad HTTP: solo `GET /api/health` es público; cualquier otra ruta se deniega y, sin
-credenciales, responde 401. Esta etapa es solo la base técnica: aún no existen registro,
-login ni otros flujos de acceso.
+Para generar la clave del outbox:
+
+```powershell
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+```bash
+openssl rand -base64 32
+```
+
+Seguridad HTTP: solo `GET /api/health`, `GET /activate` y los tres `POST /api/v1/auth/*` de la sección 7
+son públicos; cualquier otra ruta se deniega y, sin credenciales, responde 401.
 
 ## 6. Pruebas
 
-`./mvnw test` (o `.\mvnw.cmd test`) ejecuta las pruebas unitarias y MVC, que no necesitan
-base de datos. Las pruebas de integración usan Testcontainers con PostgreSQL real y requieren
+`./mvnw test` (o `.\mvnw.cmd test`) ejecuta las pruebas unitarias y MVC (incluido un servidor SMTP de
+prueba en memoria), que no necesitan base de datos. Las pruebas de integración usan Testcontainers con PostgreSQL real y requieren
 Docker en ejecución:
 
 ```bash
 ./mvnw verify -Pintegration-test
 ```
+
+## 7. Registro, activación y correo
+
+| Método | Ruta | Resultado |
+|---|---|---|
+| POST | `/api/v1/auth/register` | `{"email","password"}` → `201`; email repetido `409`; datos inválidos `400` |
+| POST | `/api/v1/auth/activate` | `{"token"}` → `204`; token inválido, vencido o ya usado `400` |
+| POST | `/api/v1/auth/resend-activation` | `{"email"}` → siempre `202` con el mismo cuerpo, exista o no la cuenta |
+| GET | `/activate` | Página mínima que activa la cuenta al pulsar un botón |
+
+La contraseña requiere al menos 8 caracteres, una letra y un número. El registro crea la cuenta
+`PENDING_ACTIVATION` y deja un correo `PENDING` en el outbox, con el enlace cifrado (AES-256-GCM);
+la API nunca habla con SMTP. El enlace del correo es `STOCKFLOW_PUBLIC_ACTIVATION_URL#token=...`: el token va en
+el fragmento, que el navegador no envía al servidor.
+
+Los correos los envía un **worker**, un proceso aparte que procesa los `PENDING`, los marca `SENT` y termina.
+Con las variables `STOCKFLOW_SMTP_*` definidas (PowerShell):
+
+```powershell
+$env:STOCKFLOW_WORKER_ENABLED = "true"
+$env:SPRING_MAIN_WEB_APPLICATION_TYPE = "none"
+.\mvnw.cmd spring-boot:run
+```
+
+(en Bash: `STOCKFLOW_WORKER_ENABLED=true SPRING_MAIN_WEB_APPLICATION_TYPE=none ./mvnw spring-boot:run`).
+Si SMTP no responde, el correo sigue `PENDING` y puede reintentarse volviendo a ejecutar el worker; si dos workers
+corren a la vez no se reclama el mismo correo. No se garantiza "exactamente una vez": si el proceso cae justo
+después de que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo puede reenviarse.
+
+Verificación manual con un SMTP real: registra un correo propio, ejecuta el worker, abre el enlace recibido y pulsa
+**Activar cuenta**.
