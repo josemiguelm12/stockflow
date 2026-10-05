@@ -224,6 +224,20 @@ class AuthWebTest {
     }
 
     @Test
+    void loginWithAMalformedEmailIsA400ProblemWithoutEchoingTheValue() throws Exception {
+        when(login.login(any(), any())).thenThrow(new InvalidInputException("email", "must be a valid email address"));
+
+        String body = mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"not-an-email\",\"password\":\"Passw0rd-secret\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errors[0].field").value("email"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain("not-an-email").doesNotContain("Passw0rd-secret");
+    }
+
+    @Test
     void meReturnsOnlyIdEmailAndRoleForAValidBearer() throws Exception {
         when(authenticateSession.authenticate("valid-token"))
                 .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "STANDARD", SESSION_ID)));

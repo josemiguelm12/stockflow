@@ -1,5 +1,6 @@
 package com.stockflow.identity.application;
 
+import com.stockflow.identity.domain.EmailNormalizer;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -42,7 +43,12 @@ public class Login {
 
     @Transactional
     public LoginResult login(String email, String password) {
-        String normalized = com.stockflow.identity.domain.EmailNormalizer.normalize(email);
+        String normalized = EmailNormalizer.normalize(email);
+        // Un email mal formado se rechaza antes de tocar la base de datos. El formato no depende de si la cuenta
+        // existe, así que no permite enumerar usuarios; un email válido desconocido sigue recibiendo el 401 genérico.
+        if (!EmailNormalizer.isValid(normalized)) {
+            throw new InvalidInputException("email", "must be a valid email address");
+        }
         Instant now = clock.instant();
 
         Optional<LoginAccount> found = users.lockForLogin(normalized);

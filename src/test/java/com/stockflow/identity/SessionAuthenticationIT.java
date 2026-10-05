@@ -246,6 +246,28 @@ class SessionAuthenticationIT extends AbstractPostgresIT {
         assertThat(wrongOnPending.getResponse().getContentAsString()).isEqualTo(unknown.getResponse().getContentAsString());
     }
 
+    @Test
+    void aMalformedEmailIsAControlled400AndALoginForAValidUnknownEmailKeepsTheSame401() throws Exception {
+        createUser(EMAIL, "ACTIVE", "STANDARD");
+        String usersBefore = jdbc.queryForList("SELECT * FROM users").toString();
+
+        for (String bad : new String[]{"not-an-email", "a@b", "two words@example.test", "@example.test", "user@"}) {
+            MvcResult result = login(bad, PASSWORD);
+            assertThat(result.getResponse().getStatus()).as(bad).isEqualTo(400);
+            assertThat(result.getResponse().getContentType()).startsWith("application/problem+json");
+            String body = result.getResponse().getContentAsString();
+            assertThat(body).contains("\"field\":\"email\"").doesNotContain(bad).doesNotContain(PASSWORD);
+        }
+        assertThat(count("SELECT count(*) FROM auth_sessions")).isZero();
+        assertThat(jdbc.queryForList("SELECT * FROM users").toString()).isEqualTo(usersBefore);
+
+        // El 400 no depende de si la cuenta existe; un email válido desconocido y una contraseña incorrecta siguen iguales.
+        MvcResult unknown = login("nobody@example.test", PASSWORD);
+        MvcResult wrong = login(EMAIL, "Wr0ng-password");
+        assertThat(unknown.getResponse().getStatus()).isEqualTo(401);
+        assertThat(unknown.getResponse().getContentAsString()).isEqualTo(wrong.getResponse().getContentAsString());
+    }
+
     // ---- T02-03 ----
 
     @Test

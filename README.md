@@ -158,7 +158,8 @@ Verificación manual con un SMTP real: registra un correo propio, ejecuta el wor
 | GET | `/api/v1/auth/me` | Con `Authorization: Bearer <token>` → `{"id","email","role"}` |
 | POST | `/api/v1/auth/logout` | Con Bearer → `204`; el mismo token deja de servir de inmediato |
 
-- **Rechazos:** usuario desconocido, contraseña incorrecta y cuenta bloqueada devuelven el mismo `401` genérico.
+- **Rechazos:** un email con formato inválido devuelve `400` (no depende de si la cuenta existe). Usuario
+  desconocido, contraseña incorrecta y cuenta bloqueada devuelven el mismo `401` genérico.
   Credenciales correctas de una cuenta que no está `ACTIVE` devuelven `403` (cuenta no activa) y no crean sesión.
 - **JWT:** HS256, 15 minutos fijos, claims `sub` (usuario), `jti`, `iat` y `exp`; sin email, rol ni datos sensibles.
   El `jti` se guarda en `auth_sessions` (nunca el JWT). En cada petición se validan firma, expiración, sesión
@@ -172,5 +173,8 @@ Verificación manual con un SMTP real: registra un correo propio, ejecuta el wor
 - **Rate limiting** (independiente del bloqueo): por IP de la conexión, ventana fija de un minuto; `/api/v1/**`
   120 por minuto y `POST /api/v1/auth/login` 10 por minuto adicionales. Al superarlo responde `429` con
   `Retry-After`. `X-Forwarded-For` se ignora a propósito (es falsificable). `/api/health` y `/activate` quedan fuera.
-  **Limitación:** el estado vive en memoria de un solo proceso (acotado); con varias instancias o detrás de un
+  **Limitación:** el estado vive en memoria de un solo proceso; con varias instancias o detrás de un
   proxy que oculte la IP real haría falta un almacén distribuido o configurar la IP del cliente, fuera de alcance.
+  El estado está acotado a 50 000 IPs: si se llena (p. ej. una inundación de IPs distintas), se descartan las
+  ventanas vencidas y, si no basta, las IPs *nuevas* reciben `429` hasta que venza la ventana; los límites de las IPs
+  ya registradas nunca se reinician.
