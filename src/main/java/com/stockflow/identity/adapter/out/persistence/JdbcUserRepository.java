@@ -1,12 +1,15 @@
 package com.stockflow.identity.adapter.out.persistence;
 
 import com.stockflow.identity.application.EmailAlreadyRegisteredException;
+import com.stockflow.identity.application.LoginAccount;
 import com.stockflow.identity.application.UserRepository;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Types;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -56,6 +59,48 @@ class JdbcUserRepository implements UserRepository {
                 .param("id", userId)
                 .query(UUID.class)
                 .optional();
+    }
+
+    @Override
+    public Optional<LoginAccount> lockForLogin(String emailNormalized) {
+        return jdbc.sql("""
+                SELECT id, password_hash, account_status, failed_login_attempts, locked_until
+                FROM users WHERE email_normalized = :email FOR UPDATE
+                """)
+                .param("email", emailNormalized)
+                .query((rs, row) -> {
+                    OffsetDateTime lockedUntil = rs.getObject("locked_until", OffsetDateTime.class);
+                    return new LoginAccount(
+                            rs.getObject("id", UUID.class),
+                            rs.getString("password_hash"),
+                            rs.getString("account_status"),
+                            rs.getInt("failed_login_attempts"),
+                            lockedUntil == null ? null : lockedUntil.toInstant());
+                })
+                .optional();
+    }
+
+    @Override
+    public void recordFailedLogin(UUID userId, int failedAttempts, Instant lockedUntil, Instant now) {
+        jdbc.sql("""
+                UPDATE users SET failed_login_attempts = :attempts, locked_until = :lockedUntil, updated_at = :now
+                WHERE id = :id
+                """)
+                .param("id", userId)
+                .param("attempts", failedAttempts)
+                .param("lockedUntil", lockedUntil == null ? null : utc(lockedUntil), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("now", utc(now))
+                .update();
+    }
+
+    @Override
+    public void clearLoginFailures(UUID userId, Instant now) {
+        jdbc.sql("""
+                UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = :now WHERE id = :id
+                """)
+                .param("id", userId)
+                .param("now", utc(now))
+                .update();
     }
 
     @Override

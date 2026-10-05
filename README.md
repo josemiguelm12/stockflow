@@ -86,12 +86,16 @@ nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí sol
 | `STOCKFLOW_ACTIVATION_TOKEN_TTL` | Vigencia del token de activación, duración ISO-8601 (p. ej. `PT24H`) |
 | `STOCKFLOW_SMTP_HOST`, `STOCKFLOW_SMTP_PORT`, `STOCKFLOW_SMTP_FROM` | Servidor SMTP y remitente; solo los usa el worker |
 | `STOCKFLOW_SMTP_USERNAME`, `STOCKFLOW_SMTP_PASSWORD` | Credenciales SMTP (vacías si el servidor no exige autenticación) |
+| `STOCKFLOW_JWT_SECRET` | Secreto HMAC del JWT: Base64 de exactamente 32 bytes aleatorios (obligatorio, solo la API) |
+| `STOCKFLOW_RATE_LIMIT_GLOBAL_PER_MINUTE` | Solicitudes por minuto y por IP a `/api/v1/**`; vacío = `120` (no es un secreto) |
+| `STOCKFLOW_RATE_LIMIT_LOGIN_PER_MINUTE` | Solicitudes por minuto y por IP a `POST /api/v1/auth/login`; vacío = `10` |
 
 Sin las variables `SPRING_DATASOURCE_*`, `STOCKFLOW_CORS_ALLOWED_ORIGINS`, `STOCKFLOW_PUBLIC_ACTIVATION_URL`,
-`STOCKFLOW_ACTIVATION_TOKEN_TTL` y las dos del outbox, la aplicación no arranca. Una clave del outbox que no
-sea Base64 de 32 bytes también impide el arranque. La API arranca sin SMTP; solo el worker lo exige.
+`STOCKFLOW_ACTIVATION_TOKEN_TTL`, `STOCKFLOW_JWT_SECRET` y las dos del outbox, la aplicación no arranca. Una clave del outbox o un
+secreto JWT que no sea Base64 de 32 bytes también impide el arranque. El worker de correo no necesita
+`STOCKFLOW_JWT_SECRET`. La API arranca sin SMTP; solo el worker lo exige.
 
-Para generar la clave del outbox:
+Para generar la clave del outbox y el secreto JWT (cada uno distinto):
 
 ```powershell
 [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
@@ -101,8 +105,9 @@ Para generar la clave del outbox:
 openssl rand -base64 32
 ```
 
-Seguridad HTTP: solo `GET /api/health`, `GET /activate` y los tres `POST /api/v1/auth/*` de la sección 7
-son públicos; cualquier otra ruta se deniega y, sin credenciales, responde 401.
+Seguridad HTTP: solo `GET /api/health`, `GET /activate`, los tres `POST /api/v1/auth/*` de la sección 7 y
+`POST /api/v1/auth/login` son públicos; `GET /api/v1/auth/me` y `POST /api/v1/auth/logout` exigen Bearer;
+cualquier otra ruta se deniega (401 sin credenciales, 403 con ellas).
 
 ## 6. Pruebas
 
@@ -144,3 +149,32 @@ después de que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo pued
 
 Verificación manual con un SMTP real: registra un correo propio, ejecuta el worker, abre el enlace recibido y pulsa
 **Activar cuenta**.
+
+## 8. Sesiones, bloqueo y rate limiting
+
+| Método | Ruta | Resultado |
+|---|---|---|
+| POST | `/api/v1/auth/login` | `{"email","password"}` → `200 {"accessToken","tokenType":"Bearer","expiresIn":900}` |
+| GET | `/api/v1/auth/me` | Con `Authorization: Bearer <token>` → `{"id","email","role"}` |
+| POST | `/api/v1/auth/logout` | Con Bearer → `204`; el mismo token deja de servir de inmediato |
+
+- **Rechazos:** un email con formato inválido devuelve `400` (no depende de si la cuenta existe). Usuario
+  desconocido, contraseña incorrecta y cuenta bloqueada devuelven el mismo `401` genérico.
+  Credenciales correctas de una cuenta que no está `ACTIVE` devuelven `403` (cuenta no activa) y no crean sesión.
+- **JWT:** HS256, 15 minutos fijos, claims `sub` (usuario), `jti`, `iat` y `exp`; sin email, rol ni datos sensibles.
+  El `jti` se guarda en `auth_sessions` (nunca el JWT). En cada petición se validan firma, expiración, sesión
+  vigente y no revocada, y que el usuario siga `ACTIVE`; email y rol se leen de la base de datos, así que un cambio
+  de rol o una desactivación se reflejan de inmediato. El token solo se acepta en la cabecera `Authorization`
+  (no en query string ni cookies).
+- **Bloqueo por cuenta:** el quinto fallo consecutivo bloquea la cuenta 15 minutos; durante el bloqueo se rechaza
+  incluso la contraseña correcta, sin crear sesión ni incrementar el contador. Al vencer, se evalúan de nuevo las
+  credenciales: un fallo mantiene el contador y abre otro bloqueo; un acierto lo limpia. Los intentos de una misma
+  cuenta se serializan con un bloqueo de fila, así que solicitudes simultáneas no eluden el umbral.
+- **Rate limiting** (independiente del bloqueo): por IP de la conexión, ventana fija de un minuto; `/api/v1/**`
+  120 por minuto y `POST /api/v1/auth/login` 10 por minuto adicionales. Al superarlo responde `429` con
+  `Retry-After`. `X-Forwarded-For` se ignora a propósito (es falsificable). `/api/health` y `/activate` quedan fuera.
+  **Limitación:** el estado vive en memoria de un solo proceso; con varias instancias o detrás de un
+  proxy que oculte la IP real haría falta un almacén distribuido o configurar la IP del cliente, fuera de alcance.
+  El estado está acotado a 50 000 IPs: si se llena (p. ej. una inundación de IPs distintas), se descartan las
+  ventanas vencidas y, si no basta, las IPs *nuevas* reciben `429` hasta que venza la ventana; los límites de las IPs
+  ya registradas nunca se reinician.

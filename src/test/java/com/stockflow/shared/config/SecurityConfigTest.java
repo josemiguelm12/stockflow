@@ -1,12 +1,15 @@
 package com.stockflow.shared.config;
 
 import com.stockflow.HealthController;
+import com.stockflow.identity.application.AuthenticateSession;
+import com.stockflow.support.WebTestClock;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -18,7 +21,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = {HealthController.class, ProtectedFixtureController.class})
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, WebTestClock.class})
 @TestPropertySource(properties = "stockflow.cors.allowed-origins=http://localhost:4200")
 class SecurityConfigTest {
 
@@ -26,6 +29,8 @@ class SecurityConfigTest {
 
     @Autowired
     private MockMvc mockMvc;
+    @MockitoBean
+    private AuthenticateSession authenticateSession;
 
     @Test
     void healthIsPublic() throws Exception {
