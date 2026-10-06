@@ -287,3 +287,8 @@ Falla sin modificar datos si el email o la contraseña no son válidos, si el em
 deshabilitada, o si ya existe otro ADMIN con un email distinto (los siguientes ADMIN se crean promoviendo usuarios
 con la API). Cuando termine, **vuelva a dejar `STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED` vacío o en `false`** y quite la
 contraseña del entorno: con el bootstrap deshabilitado la aplicación arranca normalmente y no toca ningún usuario.
+
+## 11. Máquina de estados de la Orden de Compra
+
+Los estados y transiciones de `PurchaseOrder` (migración `V2__purchase_order_state_machine.sql`) están documentados
+en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). Por ahora no tiene endpoints REST.
