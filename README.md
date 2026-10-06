@@ -1,11 +1,24 @@
 # StockFlow
 
-StockFlow utiliza Spring Boot 4.1 y Java 21 para administrar inventario y compras. Por ahora expone un endpoint de salud
+StockFlow utiliza Spring Boot 4.1 y Java 21 para administrar inventario y compras. La Práctica 1 implementa el
+control de acceso completo: registro con activación por correo, sesiones JWT con logout y bloqueo, recuperación y
+cambio de contraseña, administración de usuarios por rol, cola de correo (outbox) con un worker SMTP separado, y la
+máquina de estados de la Orden de Compra. La tabla de endpoints está en la sección 5.
+
+Documentos de la Práctica 1:
+
+- [docs/practica-1/guia-verificacion.md](docs/practica-1/guia-verificacion.md): pasos para verificar cada criterio.
+- [docs/practica-1/matriz-verificacion.md](docs/practica-1/matriz-verificacion.md): requisito → código → prueba.
+- [docs/maquina-de-estados.md](docs/maquina-de-estados.md): estados y transiciones de la Orden de Compra.
 
 ## Requisitos
 
 - **JDK 21 o superior.** Comprueba tu versión con `java -version`.
 - **Git.**
+- **PostgreSQL** (probado con la versión 16) y una base de datos vacía para la aplicación. La API, el worker y el
+  bootstrap del primer ADMIN la necesitan.
+- **Docker**, solo para las pruebas de integración (`verify -Pintegration-test`), que levantan su propio PostgreSQL
+  con Testcontainers. No hace falta para ejecutar la aplicación ni las pruebas unitarias.
 - **No hace falta instalar Maven.** El proyecto trae Maven Wrapper (`mvnw` y `mvnw.cmd`),
   que descarga Maven 3.9.16 y las dependencias la primera vez que se ejecuta. Para esa
   primera ejecución se necesita internet.
@@ -34,6 +47,9 @@ En Linux, macOS o Git Bash:
 Debe terminar con `BUILD SUCCESS`.
 
 ## 3. Levantar la aplicación
+
+Antes de arrancar, define las variables de entorno de la sección 5 en la misma terminal. Sin ellas, la aplicación
+no arranca. Al iniciar, Flyway aplica las migraciones pendientes (V1 y V2).
 
 En Windows (PowerShell):
 
@@ -69,7 +85,9 @@ parecida a esta (el orden de los campos puede variar):
 
 La aplicación necesita PostgreSQL. Flyway aplica `src/main/resources/db/migration` al arrancar
 (`V1__identity_foundation.sql` crea `users`, `auth_sessions`, `one_time_tokens` y
-`outbound_emails`). Las migraciones solo avanzan; no hay rollback automático.
+`outbound_emails`; `V2__purchase_order_state_machine.sql` crea `purchase_orders`). Las migraciones solo avanzan; no
+hay rollback automático. Para ver las aplicadas:
+`SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;`.
 
 Define estas variables en tu entorno (los nombres y su propósito están en `.env.example`;
 nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí solo:
@@ -86,6 +104,7 @@ nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí sol
 | `STOCKFLOW_ACTIVATION_TOKEN_TTL` | Vigencia del token de activación, duración ISO-8601 (p. ej. `PT24H`) |
 | `STOCKFLOW_SMTP_HOST`, `STOCKFLOW_SMTP_PORT`, `STOCKFLOW_SMTP_FROM` | Servidor SMTP y remitente; solo los usa el worker |
 | `STOCKFLOW_SMTP_USERNAME`, `STOCKFLOW_SMTP_PASSWORD` | Credenciales SMTP (vacías si el servidor no exige autenticación) |
+| `STOCKFLOW_WORKER_ENABLED` | `true` solo al ejecutar el worker de correo (sección 7); vacío o sin definir en la API normal (no es un secreto) |
 | `STOCKFLOW_JWT_SECRET` | Secreto HMAC del JWT: Base64 de exactamente 32 bytes aleatorios (obligatorio, solo la API) |
 | `STOCKFLOW_RATE_LIMIT_GLOBAL_PER_MINUTE` | Solicitudes por minuto y por IP a `/api/v1/**`; vacío = `120` (no es un secreto) |
 | `STOCKFLOW_RATE_LIMIT_LOGIN_PER_MINUTE` | Solicitudes por minuto y por IP a `POST /api/v1/auth/login`; vacío = `10` |
@@ -104,6 +123,9 @@ la aplicación no arranca (la URL de recuperación debe ser absoluta, `http` o `
 secreto JWT que no sea Base64 de 32 bytes también impide el arranque. El worker de correo no necesita
 `STOCKFLOW_JWT_SECRET`. La API arranca sin SMTP; solo el worker lo exige.
 
+Los comandos del worker y del bootstrap usan además `SPRING_MAIN_WEB_APPLICATION_TYPE=none`. Es una variable
+estándar de Spring Boot que impide abrir el puerto HTTP en esos procesos. No es de StockFlow ni va en `.env.example`.
+
 Para generar la clave del outbox y el secreto JWT (cada uno distinto):
 
 ```powershell
@@ -120,6 +142,33 @@ sección 7, `POST /api/v1/auth/login` y `POST /api/v1/auth/password/{forgot,rese
 `/api/v1/admin/users…` de la sección 10 exigen Bearer de un usuario con rol `ADMIN`; cualquier otra ruta se deniega
 (401 sin credenciales, 403 con ellas).
 
+### Endpoints y acceso
+
+Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10. Los errores responden con
+`ProblemDetail` (JSON), sin trazas ni SQL.
+
+| Método | Ruta | Acceso | Cuerpo mínimo | Resultado esperado |
+|---|---|---|---|---|
+| GET | `/api/health` | Público | — | `200 {"status":"UP","application":"StockFlow"}` |
+| POST | `/api/v1/auth/register` | Público | `{"email","password"}` | `201`; email repetido `409`; datos inválidos `400` |
+| POST | `/api/v1/auth/activate` | Público | `{"token"}` | `204`; token inválido, vencido o usado `400` |
+| POST | `/api/v1/auth/resend-activation` | Público | `{"email"}` | Siempre `202` con el mismo cuerpo |
+| GET | `/activate` | Público | — | `200` página HTML de activación |
+| POST | `/api/v1/auth/login` | Público | `{"email","password"}` | `200 {"accessToken","tokenType","expiresIn"}`; credenciales incorrectas o cuenta bloqueada `401`; cuenta no activa o reset obligatorio `403` |
+| GET | `/api/v1/auth/me` | Bearer | — | `200 {"id","email","role"}`; sin Bearer válido `401` |
+| POST | `/api/v1/auth/logout` | Bearer | — | `204`; el token deja de servir |
+| POST | `/api/v1/auth/password/forgot` | Público | `{"email"}` | Siempre `202` con el mismo cuerpo; email mal formado `400` |
+| POST | `/api/v1/auth/password/reset` | Público | `{"token","newPassword"}` | `204`; token no utilizable o contraseña débil `400` |
+| POST | `/api/v1/auth/password/change` | Bearer | `{"currentPassword","newPassword"}` | `204`; contraseña actual incorrecta o nueva débil `400` |
+| GET | `/reset-password` | Público | — | `200` página HTML de recuperación |
+| GET | `/api/v1/admin/users?page=0&size=20` | Bearer ADMIN | — | `200` página de usuarios; STANDARD `403` |
+| PATCH | `/api/v1/admin/users/{id}/role` | Bearer ADMIN | `{"role"}` | `204`; conflicto `409`; inexistente `404` |
+| PATCH | `/api/v1/admin/users/{id}/status` | Bearer ADMIN | `{"accountStatus"}` | `204`; conflicto `409`; inexistente `404` |
+| POST | `/api/v1/admin/users/{id}/force-password-reset` | Bearer ADMIN | Sin cuerpo | `202`; cualquier cuerpo `400`; cuenta no activa `409` |
+
+Cualquier ruta o método que no esté en la tabla responde `401` sin credenciales o `403` con ellas. Además, el rate
+limiting de la sección 8 puede responder `429` en las rutas `/api/v1/**`.
+
 ## 6. Pruebas
 
 `./mvnw test` (o `.\mvnw.cmd test`) ejecuta las pruebas unitarias y MVC (incluido un servidor SMTP de
@@ -128,6 +177,10 @@ Docker en ejecución:
 
 ```bash
 ./mvnw verify -Pintegration-test
+```
+
+```powershell
+.\mvnw.cmd verify -Pintegration-test
 ```
 
 ## 7. Registro, activación y correo
@@ -292,3 +345,39 @@ contraseña del entorno: con el bootstrap deshabilitado la aplicación arranca n
 
 Los estados y transiciones de `PurchaseOrder` (migración `V2__purchase_order_state_machine.sql`) están documentados
 en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). Por ahora no tiene endpoints REST.
+
+## 12. Verificación de la Práctica 1
+
+- [docs/practica-1/guia-verificacion.md](docs/practica-1/guia-verificacion.md): guía paso a paso, desde un checkout
+  limpio, con el resultado o código HTTP esperado en cada paso (correo real, token doble o vencido, cinco fallos,
+  logout, requests manuales de ADMIN, reset, SMTP apagado, doble worker, reinicio y máquina de estados).
+- [docs/practica-1/matriz-verificacion.md](docs/practica-1/matriz-verificacion.md): matriz de cada requisito (RF-CA,
+  RF-NOT, RF-NEG, RD, Git) con la clase que lo implementa, la prueba automática que lo cubre y cómo reproducirlo.
+
+## 13. Entrega
+
+Cada funcionalidad se desarrolló en su propia rama y se fusionó en `main` mediante un pull request:
+
+| PR | Rama | Contenido |
+|---|---|---|
+| #6 | `chore/p1-foundation` | PostgreSQL, Flyway (V1), seguridad base, CORS |
+| #7 | `feature/p1-registration-activation` | Registro, activación, reenvío, outbox y worker SMTP |
+| #8 | `feature/p1-session-auth` | Login, `/me`, logout, bloqueo y rate limiting |
+| #9 | `feature/p1-password-recovery` | Recuperación y cambio de contraseña |
+| #10 | `feature/p1-user-administration` | Administración de usuarios y bootstrap del primer ADMIN |
+| #11 | `feature/p1-business-states` | Máquina de estados de la Orden de Compra (V2) |
+
+Esta documentación final llega en la rama `docs/p1-readme-qa`.
+
+La versión evaluada se marca con el tag **`practica-1`** sobre `main`. Se crea **solo después** de que el PR de
+documentación esté aprobado y fusionado, y con `main` actualizado:
+
+```bash
+git checkout main
+git pull origin main
+git tag practica-1
+git push origin practica-1
+```
+
+En Moodle se entregan la URL del repositorio y el nombre del tag, `practica-1`. El tag anterior, `asignacion-1`,
+pertenece a otra entrega y no se mueve ni se borra.
