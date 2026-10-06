@@ -524,11 +524,12 @@ class PasswordRecoveryIT extends AbstractPostgresIT {
     void aSuccessfulChangeUpdatesTheHashInvalidatesResetTokensAndRevokesEverySessionIncludingTheCurrentOne() throws Exception {
         createUser(EMAIL, "ACTIVE", "STANDARD");
         createUser("other@example.test", "ACTIVE", "STANDARD");
-        jdbc.update("UPDATE users SET password_reset_required = true WHERE email_normalized = ?", EMAIL);
         String current = loginToken(EMAIL, OLD);
         clock.advance(Duration.ofSeconds(1));
         String another = loginToken(EMAIL, OLD);
         String othersToken = loginToken("other@example.test", OLD);
+        // Desde T04 el login se rechaza con password_reset_required = true; se marca después de abrir las sesiones.
+        jdbc.update("UPDATE users SET password_reset_required = true WHERE email_normalized = ?", EMAIL);
         forgot(EMAIL);
         String pendingReset = pendingToken(EMAIL, "PASSWORD_RESET");
         String hashBefore = passwordHash(EMAIL);

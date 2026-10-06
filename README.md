@@ -94,6 +94,9 @@ nunca subas un `.env` con valores reales). Spring Boot no lee `.env` por sí sol
 | `STOCKFLOW_RATE_LIMIT_PASSWORD_FORGOT_PER_MINUTE` | Solicitudes por minuto y por IP a `POST /api/v1/auth/password/forgot`; vacío = `5` |
 | `STOCKFLOW_RATE_LIMIT_PASSWORD_RESET_PER_MINUTE` | Ídem a `POST /api/v1/auth/password/reset`; vacío = `10` |
 | `STOCKFLOW_RATE_LIMIT_PASSWORD_CHANGE_PER_MINUTE` | Ídem a `POST /api/v1/auth/password/change`; vacío = `5` |
+| `STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED` | `true` solo para crear el primer ADMIN (sección 10); vacío o `false` en el uso normal |
+| `STOCKFLOW_ADMIN_BOOTSTRAP_EMAIL` | Email del primer ADMIN; solo se lee con el bootstrap habilitado |
+| `STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD` | Contraseña del primer ADMIN (política de contraseñas); solo con el bootstrap habilitado. Nunca la versione |
 
 Sin las variables `SPRING_DATASOURCE_*`, `STOCKFLOW_CORS_ALLOWED_ORIGINS`, `STOCKFLOW_PUBLIC_ACTIVATION_URL`,
 `STOCKFLOW_ACTIVATION_TOKEN_TTL`, `STOCKFLOW_PUBLIC_PASSWORD_RESET_URL`, `STOCKFLOW_JWT_SECRET` y las dos del outbox,
@@ -104,7 +107,7 @@ secreto JWT que no sea Base64 de 32 bytes también impide el arranque. El worker
 Para generar la clave del outbox y el secreto JWT (cada uno distinto):
 
 ```powershell
-[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+$b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
 ```
 
 ```bash
@@ -113,8 +116,9 @@ openssl rand -base64 32
 
 Seguridad HTTP: solo `GET /api/health`, `GET /activate`, `GET /reset-password`, los tres `POST /api/v1/auth/*` de la
 sección 7, `POST /api/v1/auth/login` y `POST /api/v1/auth/password/{forgot,reset}` son públicos;
-`GET /api/v1/auth/me`, `POST /api/v1/auth/logout` y `POST /api/v1/auth/password/change` exigen Bearer; cualquier otra
-ruta se deniega (401 sin credenciales, 403 con ellas).
+`GET /api/v1/auth/me`, `POST /api/v1/auth/logout` y `POST /api/v1/auth/password/change` exigen Bearer; las rutas
+`/api/v1/admin/users…` de la sección 10 exigen Bearer de un usuario con rol `ADMIN`; cualquier otra ruta se deniega
+(401 sin credenciales, 403 con ellas).
 
 ## 6. Pruebas
 
@@ -168,6 +172,8 @@ Verificación manual con un SMTP real: registra un correo propio, ejecuta el wor
 - **Rechazos:** un email con formato inválido devuelve `400` (no depende de si la cuenta existe). Usuario
   desconocido, contraseña incorrecta y cuenta bloqueada devuelven el mismo `401` genérico.
   Credenciales correctas de una cuenta que no está `ACTIVE` devuelven `403` (cuenta no activa) y no crean sesión.
+  Credenciales correctas de una cuenta con reset de contraseña forzado por un ADMIN devuelven `403`
+  (`Password reset required`), tampoco crean sesión, y hay que completar el reset (sección 9).
 - **JWT:** HS256, 15 minutos fijos, claims `sub` (usuario), `jti`, `iat` y `exp`; sin email, rol ni datos sensibles.
   El `jti` se guarda en `auth_sessions` (nunca el JWT). En cada petición se validan firma, expiración, sesión
   vigente y no revocada, y que el usuario siga `ACTIVE`; email y rol se leen de la base de datos, así que un cambio
@@ -218,3 +224,66 @@ Verificación manual con un SMTP real: registra un correo propio, ejecuta el wor
 - **Concurrencia:** `forgot`, `reset` y `change` bloquean primero la fila del usuario y después tokens, sesiones y outbox
   (mismo orden que la activación): dos redenciones del mismo token permiten como máximo un éxito.
 - **Rate limiting:** `forgot` 5, `reset` 10 y `change` 5 por minuto y por IP (configurables), además del límite global.
+
+## 10. Administración de usuarios y primer ADMIN
+
+Todas estas rutas exigen `Authorization: Bearer` de un usuario con rol `ADMIN`: sin token o con un token inválido
+responden `401`; con un usuario `STANDARD`, `403`. El rol se lee de la base de datos en cada petición, así que un
+cambio de rol se aplica en la siguiente petición sin emitir otro JWT.
+
+| Método | Ruta | Cuerpo | Resultado |
+|---|---|---|---|
+| GET | `/api/v1/admin/users?page=0&size=20` | — | `200` con `items` (`id`, `email`, `role`, `accountStatus`, `passwordResetRequired`, `createdAt`, `updatedAt`), `page`, `size`, `totalElements`, `totalPages` |
+| PATCH | `/api/v1/admin/users/{id}/role` | `{"role":"ADMIN"}` o `"STANDARD"` | `204` |
+| PATCH | `/api/v1/admin/users/{id}/status` | `{"accountStatus":"ACTIVE"}` o `"DISABLED"` | `204` |
+| POST | `/api/v1/admin/users/{id}/force-password-reset` | — | `202` (sin token ni enlace en la respuesta) |
+
+- **Listado:** orden estable `createdAt`, luego `id`. `page >= 0` y `size` entre 1 y 100; otro valor da `400`. Nunca
+  incluye hash, intentos fallidos, bloqueo, tokens ni sesiones.
+- **Errores:** UUID mal formado `400`; usuario inexistente `404`; cambio no permitido `409` genérico. Los cuerpos son
+  cerrados: cualquier propiedad distinta de la indicada (p. ej. `userId`, `email`) da `400`.
+- **Rol:** solo `ADMIN` o `STANDARD`; asignar el mismo rol no hace nada (`204`). Un ADMIN no puede cambiar su propio
+  rol, y no se puede degradar al último ADMIN activo (`409`).
+- **Estado:** solo `ACTIVE` o `DISABLED`. Desactivar exige una cuenta `ACTIVE` y revoca todas sus sesiones de inmediato;
+  reactivar exige una cuenta `DISABLED` que alguna vez se activó y no revive sesiones ni limpia el bloqueo de login.
+  Un ADMIN no puede desactivarse a sí mismo ni desactivar al último ADMIN activo (`409`). Pedir el estado actual no
+  hace nada (`204`).
+- **Reset forzado:** solo sobre una cuenta `ACTIVE` (pendiente o deshabilitada: `409`). Marca el reset como
+  obligatorio, invalida los tokens de recuperación anteriores, encola un correo de recuperación (el mismo flujo de la
+  sección 9) y revoca todas las sesiones del usuario, también la del ADMIN si se lo aplica a sí mismo. La contraseña
+  anterior deja de abrir sesión de inmediato; al completar el reset con el enlace, todo vuelve a la normalidad.
+  Repetirlo invalida el token anterior. La operación no llama a SMTP: si el servidor de correo está caído, el correo
+  queda pendiente para el worker.
+- **Concurrencia:** los cambios de rol y estado (y el bootstrap) se serializan con un bloqueo transaccional de
+  PostgreSQL, así que dos operaciones simultáneas nunca dejan el sistema sin ADMIN activos.
+- **Registro:** cada operación deja un evento `admin_event` en el log con IDs, acción y resultado (sin emails,
+  contraseñas ni tokens). No hay auditoría persistente.
+
+### Crear el primer ADMIN (bootstrap)
+
+El primer ADMIN se crea con un **proceso aparte** (no hay endpoint HTTP para ello). Solo necesita las variables
+`SPRING_DATASOURCE_*` y las tres de bootstrap: no arranca el servidor web, no envía correo y no pide el secreto JWT,
+CORS, URLs públicas, SMTP ni la clave del outbox. En PowerShell:
+
+```powershell
+$env:STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED = "true"
+$env:STOCKFLOW_ADMIN_BOOTSTRAP_EMAIL = "<email del primer ADMIN>"
+$env:STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD = "<contraseña segura>"
+$env:SPRING_MAIN_WEB_APPLICATION_TYPE = "none"
+.\mvnw.cmd spring-boot:run
+```
+
+(en Bash: `STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED=true STOCKFLOW_ADMIN_BOOTSTRAP_EMAIL=... STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD=... SPRING_MAIN_WEB_APPLICATION_TYPE=none ./mvnw spring-boot:run`).
+
+El proceso termina e informa en el log `Admin bootstrap finished: created`, `promoted` o `already-present`, sin
+mostrar el email ni la contraseña:
+
+- **`created`:** no había ningún ADMIN y el email no existía. Se crea un usuario `ACTIVE` con rol `ADMIN`.
+- **`promoted`:** no había ningún ADMIN y el email es de un usuario `ACTIVE` con rol `STANDARD`. Pasa a `ADMIN`, su
+  contraseña se reemplaza por la de bootstrap y se revocan sus sesiones y tokens de recuperación.
+- **`already-present`:** ese email ya es ADMIN. No cambia nada, ni siquiera la contraseña; repetir es seguro.
+
+Falla sin modificar datos si el email o la contraseña no son válidos, si el email es de una cuenta pendiente o
+deshabilitada, o si ya existe otro ADMIN con un email distinto (los siguientes ADMIN se crean promoviendo usuarios
+con la API). Cuando termine, **vuelva a dejar `STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED` vacío o en `false`** y quite la
+contraseña del entorno: con el bootstrap deshabilitado la aplicación arranca normalmente y no toca ningún usuario.

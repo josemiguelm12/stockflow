@@ -18,4 +18,11 @@ public sealed interface LoginResult {
     /** Credenciales correctas de una cuenta que no está ACTIVE. */
     record AccountNotActive() implements LoginResult {
     }
+
+    /**
+     * Credenciales correctas de una cuenta ACTIVE con reset obligatorio (forzado por un ADMIN): la contraseña previa
+     * ya no abre sesión. Solo se informa después de verificar la contraseña, así que no permite enumerar cuentas.
+     */
+    record PasswordResetRequired() implements LoginResult {
+    }
 }

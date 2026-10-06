@@ -64,7 +64,7 @@ class JdbcUserRepository implements UserRepository {
     @Override
     public Optional<LoginAccount> lockForLogin(String emailNormalized) {
         return jdbc.sql("""
-                SELECT id, password_hash, account_status, failed_login_attempts, locked_until
+                SELECT id, password_hash, account_status, failed_login_attempts, locked_until, password_reset_required
                 FROM users WHERE email_normalized = :email FOR UPDATE
                 """)
                 .param("email", emailNormalized)
@@ -75,7 +75,8 @@ class JdbcUserRepository implements UserRepository {
                             rs.getString("password_hash"),
                             rs.getString("account_status"),
                             rs.getInt("failed_login_attempts"),
-                            lockedUntil == null ? null : lockedUntil.toInstant());
+                            lockedUntil == null ? null : lockedUntil.toInstant(),
+                            rs.getBoolean("password_reset_required"));
                 })
                 .optional();
     }

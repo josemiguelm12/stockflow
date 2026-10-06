@@ -22,6 +22,7 @@ public class Login {
 
     private static final LoginResult INVALID = new LoginResult.InvalidCredentials();
     private static final LoginResult NOT_ACTIVE = new LoginResult.AccountNotActive();
+    private static final LoginResult RESET_REQUIRED = new LoginResult.PasswordResetRequired();
 
     private final UserRepository users;
     private final SessionRepository sessions;
@@ -73,6 +74,10 @@ public class Login {
 
         if (!"ACTIVE".equals(account.accountStatus())) {
             return NOT_ACTIVE;
+        }
+        if (account.passwordResetRequired()) {
+            // Reset forzado por un ADMIN: la contraseña anterior ya no crea sesión. No se limpian fallos ni bloqueo.
+            return RESET_REQUIRED;
         }
 
         if (account.failedAttempts() != 0 || account.lockedUntil() != null) {

@@ -70,6 +70,12 @@ class AuthController {
                     .body(ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, "Invalid credentials."));
             case LoginResult.AccountNotActive ignored -> ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, "The account is not active."));
+            case LoginResult.PasswordResetRequired ignored -> {
+                ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN,
+                        "A password reset is required before signing in.");
+                problem.setTitle("Password reset required");
+                yield ResponseEntity.status(HttpStatus.FORBIDDEN).body(problem);
+            }
         };
     }
 

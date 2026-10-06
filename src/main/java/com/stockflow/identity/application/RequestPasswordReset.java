@@ -1,32 +1,22 @@
 package com.stockflow.identity.application;
 
-import com.stockflow.identity.domain.ActivationToken;
 import com.stockflow.identity.domain.EmailNormalizer;
-import com.stockflow.shared.config.PasswordResetProperties;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.UUID;
 
 @Service
 public class RequestPasswordReset {
 
-    private final SecureRandom random = new SecureRandom();
     private final UserRepository users;
-    private final PasswordResetTokenRepository tokens;
-    private final PasswordResetEmailPort emails;
-    private final PasswordResetProperties properties;
+    private final PasswordResetIssuer issuer;
     private final Clock clock;
 
-    RequestPasswordReset(UserRepository users, PasswordResetTokenRepository tokens, PasswordResetEmailPort emails,
-                         PasswordResetProperties properties, Clock clock) {
+    RequestPasswordReset(UserRepository users, PasswordResetIssuer issuer, Clock clock) {
         this.users = users;
-        this.tokens = tokens;
-        this.emails = emails;
-        this.properties = properties;
+        this.issuer = issuer;
         this.clock = clock;
     }
 
@@ -42,11 +32,6 @@ public class RequestPasswordReset {
             throw new InvalidInputException("email", "must be a valid email address");
         }
         Instant now = clock.instant();
-        users.lockActiveIdByEmail(normalized).ifPresent(userId -> {
-            tokens.invalidatePending(userId, now);
-            ActivationToken token = ActivationToken.generate(random);
-            tokens.insert(UUID.randomUUID(), userId, token.hash(), now.plus(properties.tokenTtl()));
-            emails.queue(normalized, token.raw());
-        });
+        users.lockActiveIdByEmail(normalized).ifPresent(userId -> issuer.issue(userId, normalized, now));
     }
 }

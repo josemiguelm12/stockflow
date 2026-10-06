@@ -76,7 +76,8 @@ class JwtAccessTokenServiceTest {
         String token = token();
         String[] parts = token.split("\\.");
 
-        String flipped = parts[2].substring(0, parts[2].length() - 2) + (parts[2].endsWith("A") ? "B" : "A") + "A";
+        // Primer carácter de la firma (6 bits útiles); el último solo aporta 4 y podía no cambiar los bytes.
+        String flipped = (parts[2].charAt(0) == 'A' ? 'B' : 'A') + parts[2].substring(1);
         assertThat(service.verify(parts[0] + "." + parts[1] + "." + flipped)).isEmpty();
 
         String forgedPayload = Base64.getUrlEncoder().withoutPadding().encodeToString(
