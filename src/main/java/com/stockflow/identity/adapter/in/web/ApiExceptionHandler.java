@@ -1,10 +1,13 @@
 package com.stockflow.identity.adapter.in.web;
 
+import com.stockflow.identity.application.AdminActorNotAuthorizedException;
+import com.stockflow.identity.application.AdminConflictException;
 import com.stockflow.identity.application.EmailAlreadyRegisteredException;
 import com.stockflow.identity.application.InvalidActivationTokenException;
 import com.stockflow.identity.application.InvalidCurrentPasswordException;
 import com.stockflow.identity.application.InvalidInputException;
 import com.stockflow.identity.application.InvalidPasswordResetTokenException;
+import com.stockflow.identity.application.UserNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -54,6 +57,30 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
         problem.setTitle("Invalid password reset token");
         problem.setDetail("The password reset token is invalid, expired or already used.");
+        return problem;
+    }
+
+    @ExceptionHandler(UserNotFoundException.class)
+    ProblemDetail userNotFound() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Not found");
+        problem.setDetail("The requested resource was not found.");
+        return problem;
+    }
+
+    @ExceptionHandler(AdminConflictException.class)
+    ProblemDetail adminConflict() {
+        // Genérico: no dice si es auto-cambio, último ADMIN o transición inválida.
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("The requested change is not allowed.");
+        return problem;
+    }
+
+    @ExceptionHandler(AdminActorNotAuthorizedException.class)
+    ProblemDetail adminActorNotAuthorized() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.FORBIDDEN);
+        problem.setTitle("Forbidden");
         return problem;
     }
 

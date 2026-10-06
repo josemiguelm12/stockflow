@@ -24,6 +24,11 @@ public class RegisterUser {
     }
 
     public record Registered(UUID id, String email) {
+
+        @Override
+        public String toString() {
+            return "Registered[id=" + id + "]";
+        }
     }
 
     @Transactional

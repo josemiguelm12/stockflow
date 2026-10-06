@@ -286,7 +286,8 @@ class AuthWebTest {
         when(authenticateSession.authenticate("valid-token"))
                 .thenReturn(Optional.of(new AuthenticatedUser(USER_ID, "user@example.test", "ADMIN", SESSION_ID)));
 
-        mvc.perform(get("/api/v1/admin/users").header("Authorization", "Bearer valid-token"))
+        // /api/v1/admin/users es una ruta real desde T04; se usa otra que sigue sin estar listada.
+        mvc.perform(get("/api/v1/admin/reports").header("Authorization", "Bearer valid-token"))
                 .andExpect(status().isForbidden());
     }
 }

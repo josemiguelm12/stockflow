@@ -296,8 +296,9 @@ class SessionAuthenticationIT extends AbstractPostgresIT {
         Instant now = clock.instant();
         assertThat(me(foreign.issue(userId, jti, now, now.plus(Duration.ofMinutes(15)))).getResponse().getStatus()).isEqualTo(401);
         String[] parts = token.split("\\.");
-        String altered = parts[0] + "." + parts[1] + "." + parts[2].substring(0, parts[2].length() - 2)
-                + (parts[2].endsWith("A") ? "B" : "A") + "A";
+        // Se cambia el PRIMER carácter de la firma: aporta 6 bits completos. Cambiar el último (solo 4 bits útiles en
+        // Base64URL de 32 bytes) podía dejar los bytes decodificados intactos y volver la prueba intermitente.
+        String altered = parts[0] + "." + parts[1] + "." + (parts[2].charAt(0) == 'A' ? 'B' : 'A') + parts[2].substring(1);
         assertThat(me(altered).getResponse().getStatus()).isEqualTo(401);
 
         // Firma válida pero sin sesión (jti desconocido) o con sesión de otro usuario.

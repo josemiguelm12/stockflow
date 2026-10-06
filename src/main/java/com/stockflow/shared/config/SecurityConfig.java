@@ -16,6 +16,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.web.filter.CorsFilter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
@@ -35,6 +36,8 @@ public class SecurityConfig {
 
     private static final String UNAUTHORIZED_BODY =
             "{\"type\":\"about:blank\",\"title\":\"Unauthorized\",\"status\":401}";
+    private static final String FORBIDDEN_BODY =
+            "{\"type\":\"about:blank\",\"title\":\"Forbidden\",\"status\":403}";
 
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http, AuthenticationEntryPoint entryPoint,
@@ -55,7 +58,7 @@ public class SecurityConfig {
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
-                .exceptionHandling(e -> e.authenticationEntryPoint(entryPoint))
+                .exceptionHandling(e -> e.authenticationEntryPoint(entryPoint).accessDeniedHandler(accessDeniedHandler()))
                 .headers(h -> h
                         .contentTypeOptions(Customizer.withDefaults())
                         .frameOptions(f -> f.deny())
@@ -73,6 +76,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout", "/api/v1/auth/password/change")
                         .authenticated()
+                        // Administración: solo rol ADMIN (el rol se lee de la base en cada petición, no del JWT).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/users").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/admin/users/*/role", "/api/v1/admin/users/*/status")
+                        .hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/admin/users/*/force-password-reset").hasRole("ADMIN")
                         .anyRequest().denyAll());
         return http.build();
     }
@@ -85,6 +93,16 @@ public class SecurityConfig {
             response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
             response.getWriter().write(UNAUTHORIZED_BODY);
+        };
+    }
+
+    /** 403 con el mismo formato ProblemDetail que el resto de la API (usuario autenticado sin permiso). */
+    private static AccessDeniedHandler accessDeniedHandler() {
+        return (request, response, accessDeniedException) -> {
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+            response.getWriter().write(FORBIDDEN_BODY);
         };
     }
 
