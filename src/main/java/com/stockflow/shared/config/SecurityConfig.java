@@ -81,6 +81,15 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/admin/users/*/role", "/api/v1/admin/users/*/status")
                         .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/admin/users/*/force-password-reset").hasRole("ADMIN")
+                        // Gestión de Permisos: crear y listar con Bearer (el alcance del listado lo fija el caso de
+                        // uso); resolver solo ADMIN. Ningún rol concede PURCHASE_ORDER_CREATE.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/permission-requests").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/permission-requests/pending").authenticated()
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/permission-requests/*/approve",
+                                "/api/v1/permission-requests/*/reject").hasRole("ADMIN")
+                        // Solo Bearer: la concesión persistida decide en el caso de uso, incluso para un ADMIN.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/purchase-orders").authenticated()
                         .anyRequest().denyAll());
         return http.build();
     }

@@ -3,7 +3,9 @@
 StockFlow utiliza Spring Boot 4.1 y Java 21 para administrar inventario y compras. La Práctica 1 implementa el
 control de acceso completo: registro con activación por correo, sesiones JWT con logout y bloqueo, recuperación y
 cambio de contraseña, administración de usuarios por rol, cola de correo (outbox) con un worker SMTP separado, y la
-máquina de estados de la Orden de Compra. La tabla de endpoints está en la sección 5.
+máquina de estados de la Orden de Compra. La Asignación 2 añade la Gestión de Permisos (solicitar, aprobar o rechazar
+`PURCHASE_ORDER_CREATE` y aplicarlo a la creación de órdenes): ver la
+[sección 14](#14-gestión-de-permisos-asignación-2). La tabla de endpoints está en la sección 5.
 
 Documentos de la Práctica 1:
 
@@ -49,7 +51,7 @@ Debe terminar con `BUILD SUCCESS`.
 ## 3. Levantar la aplicación
 
 Antes de arrancar, define las variables de entorno de la sección 5 en la misma terminal. Sin ellas, la aplicación
-no arranca. Al iniciar, Flyway aplica las migraciones pendientes (V1 y V2).
+no arranca. Al iniciar, Flyway aplica las migraciones pendientes (V1, V2 y V3).
 
 En Windows (PowerShell):
 
@@ -85,7 +87,8 @@ parecida a esta (el orden de los campos puede variar):
 
 La aplicación necesita PostgreSQL. Flyway aplica `src/main/resources/db/migration` al arrancar
 (`V1__identity_foundation.sql` crea `users`, `auth_sessions`, `one_time_tokens` y
-`outbound_emails`; `V2__purchase_order_state_machine.sql` crea `purchase_orders`). Las migraciones solo avanzan; no
+`outbound_emails`; `V2__purchase_order_state_machine.sql` crea `purchase_orders`;
+`V3__permission_management.sql` crea `permission_requests` y `user_permissions`). Las migraciones solo avanzan; no
 hay rollback automático. Para ver las aplicadas:
 `SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;`.
 
@@ -139,12 +142,14 @@ openssl rand -base64 32
 Seguridad HTTP: solo `GET /api/health`, `GET /activate`, `GET /reset-password`, los tres `POST /api/v1/auth/*` de la
 sección 7, `POST /api/v1/auth/login` y `POST /api/v1/auth/password/{forgot,reset}` son públicos;
 `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` y `POST /api/v1/auth/password/change` exigen Bearer; las rutas
-`/api/v1/admin/users…` de la sección 10 exigen Bearer de un usuario con rol `ADMIN`; cualquier otra ruta se deniega
-(401 sin credenciales, 403 con ellas).
+`/api/v1/admin/users…` de la sección 10 exigen Bearer de un usuario con rol `ADMIN`; en Gestión de Permisos
+(sección 14), crear y listar solicitudes y crear órdenes exigen Bearer, y aprobar o rechazar exige rol `ADMIN`;
+cualquier otra ruta se deniega (401 sin credenciales, 403 con ellas).
 
 ### Endpoints y acceso
 
-Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10. Los errores responden con
+Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10 y, para Gestión de Permisos, en la
+[sección 14](#14-gestión-de-permisos-asignación-2). Los errores responden con
 `ProblemDetail` (JSON), sin trazas ni SQL.
 
 | Método | Ruta | Acceso | Cuerpo mínimo | Resultado esperado |
@@ -165,6 +170,11 @@ Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10
 | PATCH | `/api/v1/admin/users/{id}/role` | Bearer ADMIN | `{"role"}` | `204`; conflicto `409`; inexistente `404` |
 | PATCH | `/api/v1/admin/users/{id}/status` | Bearer ADMIN | `{"accountStatus"}` | `204`; conflicto `409`; inexistente `404` |
 | POST | `/api/v1/admin/users/{id}/force-password-reset` | Bearer ADMIN | Sin cuerpo | `202`; cualquier cuerpo `400`; cuenta no activa `409` |
+| POST | `/api/v1/permission-requests` | Bearer | `{"permissionCode":"PURCHASE_ORDER_CREATE"}` | `201 {"id","status":"PENDING"}`; código ausente o desconocido `400` |
+| GET | `/api/v1/permission-requests/pending` | Bearer | — | `200` lista (`id`, `requestedBy`, `permissionCode`, `requestedAt`): todas para ADMIN, solo las propias para STANDARD |
+| POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (queda `APPLIED` y se concede el permiso); STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
+| POST | `/api/v1/permission-requests/{id}/reject` | Bearer ADMIN | `{"reason"}` | `204`; motivo ausente o en blanco `400`; STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
+| POST | `/api/v1/purchase-orders` | Bearer | `{"supplierId"}` opcional | `201 {"id"}` con el permiso `PURCHASE_ORDER_CREATE` concedido; sin él `403`, también para un ADMIN |
 
 Cualquier ruta o método que no esté en la tabla responde `401` sin credenciales o `403` con ellas. Además, el rate
 limiting de la sección 8 puede responder `429` en las rutas `/api/v1/**`.
@@ -182,6 +192,9 @@ Docker en ejecución:
 ```powershell
 .\mvnw.cmd verify -Pintegration-test
 ```
+
+Ambos comandos deben terminar con `BUILD SUCCESS`. Si Docker no está en ejecución, las pruebas de integración fallan
+al arrancar el contenedor; eso no indica un error del código.
 
 ## 7. Registro, activación y correo
 
@@ -344,7 +357,9 @@ contraseña del entorno: con el bootstrap deshabilitado la aplicación arranca n
 ## 11. Máquina de estados de la Orden de Compra
 
 Los estados y transiciones de `PurchaseOrder` (migración `V2__purchase_order_state_machine.sql`) están documentados
-en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). Por ahora no tiene endpoints REST.
+en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). El único endpoint es `POST /api/v1/purchase-orders`
+(sección 14), que crea una orden en `DRAFT` solo si el usuario tiene concedido `PURCHASE_ORDER_CREATE`; las
+transiciones todavía no tienen endpoints.
 
 ## 12. Verificación de la Práctica 1
 
@@ -381,3 +396,219 @@ git push origin practica-1
 
 En Moodle se entregan la URL del repositorio y el nombre del tag, `practica-1`. El tag anterior, `asignacion-1`,
 pertenece a otra entrega y no se mueve ni se borra.
+
+## 14. Gestión de Permisos (Asignación 2)
+
+Un usuario solicita el permiso de negocio `PURCHASE_ORDER_CREATE`; un ADMIN distinto lo aprueba o lo rechaza con un
+motivo. Al aprobar, en la misma transacción la solicitud pasa a `APPLIED` y se concede el permiso; si algo falla, no
+cambia nada. Crear una orden de compra exige ese permiso concedido: los roles `ADMIN`/`STANDARD` no lo sustituyen.
+
+| Método | Ruta | Acceso | Cuerpo | Resultado |
+|---|---|---|---|---|
+| POST | `/api/v1/permission-requests` | Bearer | `{"permissionCode":"PURCHASE_ORDER_CREATE"}` | `201 {"id","status":"PENDING"}` |
+| GET | `/api/v1/permission-requests/pending` | Bearer | — | `200` con `id`, `requestedBy`, `permissionCode`, `requestedAt`; ADMIN ve todas, STANDARD solo las suyas |
+| POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` |
+| POST | `/api/v1/permission-requests/{id}/reject` | Bearer ADMIN | `{"reason":"<texto>"}` | `204` |
+| POST | `/api/v1/purchase-orders` | Bearer | `{"supplierId":"<uuid>"}` opcional | `201 {"id"}` |
+
+- **Identidad:** el solicitante, el decisor y su rol salen siempre de la sesión del Bearer, y el rol y el estado se
+  vuelven a leer de la base de datos en cada operación. Cualquier `userId`, `requestedBy`, `role`, `status` o fecha
+  enviados en el cuerpo o en la query se ignoran.
+- **Errores** (`application/problem+json`, sin motivos, estados internos ni SQL): `400` JSON, UUID o código
+  inválidos y motivo ausente o en blanco; `401` sin Bearer válido; `403` STANDARD en aprobar/rechazar, actor que ya no
+  es ADMIN activo u orden sin permiso concedido; `404` solicitud inexistente; `409` solicitud ya resuelta o resolución
+  de una solicitud propia.
+- **Concurrencia:** las decisiones sobre una misma solicitud se serializan con un bloqueo de fila; dos aprobaciones
+  simultáneas conceden el permiso una sola vez.
+- **Límites conocidos:** el listado no está paginado. Un usuario que ya tiene el permiso puede volver a solicitarlo,
+  pero aprobar esa segunda solicitud falla (`500` genérico, sin cambios en la base), porque solo puede existir una
+  concesión por usuario y permiso.
+
+### Demostración reproducible (RF-GP-01 a RF-GP-07)
+
+**Requisitos:** los de la sección «Requisitos» (JDK 21, Git, PostgreSQL 16; Docker solo para las pruebas de
+integración), las variables de la sección 5 y la aplicación levantada (sección 3), que aplica V1–V3 al arrancar.
+Comprueba `GET /api/health` como en la sección 4. No subas credenciales al repositorio: los valores entre `<...>` son
+tuyos y solo existen en tu terminal.
+
+**Usuarios.**
+
+1. Crea el primer ADMIN con el bootstrap de la sección 10 usando `<admin-email>` y `<admin-password>`. Al terminar,
+   deja `STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED` vacío o en `false` y elimina la contraseña del entorno
+   (`Remove-Item Env:STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD` en PowerShell o `unset STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD` en
+   Bash).
+2. Registra y activa un usuario STANDARD (`<standard-email>`, `<standard-password>`) con el flujo de la sección 7:
+   `POST /api/v1/auth/register`, ejecuta el worker y abre el enlace de activación del correo.
+
+**Sesiones.** Cada Bearer dura 15 minutos; si una petición responde `401`, repite el login.
+
+Bash (Linux, macOS o Git Bash):
+
+```bash
+API=http://localhost:8080/api/v1
+login() { curl -s -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$1\",\"password\":\"$2\"}" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/'; }
+ADMIN_TOKEN=$(login '<admin-email>' '<admin-password>')
+STANDARD_TOKEN=$(login '<standard-email>' '<standard-password>')
+curl -s "$API/auth/me" -H "Authorization: Bearer $ADMIN_TOKEN"      # anota el id del ADMIN
+curl -s "$API/auth/me" -H "Authorization: Bearer $STANDARD_TOKEN"   # anota el id del STANDARD
+```
+
+PowerShell (los cuerpos JSON se pasan a `curl.exe` por la entrada estándar con `--data-binary '@-'`, para que
+PowerShell no altere las comillas):
+
+```powershell
+$api = "http://localhost:8080/api/v1"
+$env:ADMIN_TOKEN = (Invoke-RestMethod -Method Post "$api/auth/login" -ContentType "application/json" `
+  -Body '{"email":"<admin-email>","password":"<admin-password>"}').accessToken
+$env:STANDARD_TOKEN = (Invoke-RestMethod -Method Post "$api/auth/login" -ContentType "application/json" `
+  -Body '{"email":"<standard-email>","password":"<standard-password>"}').accessToken
+curl.exe -s "$api/auth/me" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+curl.exe -s "$api/auth/me" -H "Authorization: Bearer $env:STANDARD_TOKEN"
+```
+
+En cada paso va primero el bloque Bash y después el de PowerShell. `-i` imprime el código HTTP en la primera línea.
+
+**RF-GP-01 — el STANDARD solicita el permiso.** Respuesta `201 {"id":"...","status":"PENDING"}`; se guarda el `id`.
+
+```bash
+REQUEST_ID=$(curl -s -X POST "$API/permission-requests" -H "Authorization: Bearer $STANDARD_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"permissionCode":"PURCHASE_ORDER_CREATE"}' \
+  | sed -E 's/.*"id":"([^"]+)".*/\1/'); echo "$REQUEST_ID"
+```
+
+```powershell
+$env:REQUEST_ID = (Invoke-RestMethod -Method Post "$api/permission-requests" -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $env:STANDARD_TOKEN" } -Body '{"permissionCode":"PURCHASE_ORDER_CREATE"}').id
+$env:REQUEST_ID
+```
+
+**Preparación de RF-GP-07 — el ADMIN también solicita el permiso para sí mismo.** Repite el comando anterior con
+`$ADMIN_TOKEN` (o `$env:ADMIN_TOKEN`) y guarda el `id` como `ADMIN_REQUEST_ID`.
+
+**RF-GP-02 — consultar pendientes.** El ADMIN ve las dos solicitudes. El STANDARD, en la misma ruta, solo ve la suya:
+no aparece `ADMIN_REQUEST_ID` aunque añada `?userId=...`.
+
+```bash
+curl -s "$API/permission-requests/pending" -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s "$API/permission-requests/pending" -H "Authorization: Bearer $STANDARD_TOKEN"
+```
+
+```powershell
+curl.exe -s "$api/permission-requests/pending" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+curl.exe -s "$api/permission-requests/pending" -H "Authorization: Bearer $env:STANDARD_TOKEN"
+```
+
+**RF-GP-05 (antes) — sin permiso no hay orden.** El STANDARD recibe `403`, y el ADMIN también, porque ningún rol
+sustituye al permiso.
+
+```bash
+curl -s -i -X POST "$API/purchase-orders" -H "Authorization: Bearer $STANDARD_TOKEN"
+curl -s -i -X POST "$API/purchase-orders" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+```powershell
+curl.exe -s -i -X POST "$api/purchase-orders" -H "Authorization: Bearer $env:STANDARD_TOKEN"
+curl.exe -s -i -X POST "$api/purchase-orders" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+```
+
+**RF-GP-03 — el ADMIN aprueba y el permiso se aplica.** El STANDARD no puede aprobar (`403`); el ADMIN recibe `204`.
+
+```bash
+curl -s -i -X POST "$API/permission-requests/$REQUEST_ID/approve" -H "Authorization: Bearer $STANDARD_TOKEN"
+curl -s -i -X POST "$API/permission-requests/$REQUEST_ID/approve" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+```powershell
+curl.exe -s -i -X POST "$api/permission-requests/$env:REQUEST_ID/approve" -H "Authorization: Bearer $env:STANDARD_TOKEN"
+curl.exe -s -i -X POST "$api/permission-requests/$env:REQUEST_ID/approve" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+```
+
+Compruébalo con SQL de solo lectura (por ejemplo, en `psql`). Debe verse `status = APPLIED`; `decided_by` y
+`applied_by` iguales al id del ADMIN; `decided_at` y `applied_at` con la fecha de la aprobación; y exactamente una
+concesión cuyo origen es la solicitud.
+
+```sql
+SELECT status, requested_by, decided_by, decided_at, applied_by, applied_at, rejection_reason
+FROM permission_requests WHERE id = '<REQUEST_ID>';
+SELECT user_id, permission_code, source_request_id, granted_at
+FROM user_permissions WHERE source_request_id = '<REQUEST_ID>';
+```
+
+**RF-GP-05 (después) — con el permiso aplicado, la orden se crea.** Respuesta `201 {"id":"..."}`. La orden queda en
+`DRAFT`; se comprueba con `SELECT id, state FROM purchase_orders WHERE id = '<id>';`.
+
+```bash
+curl -s -i -X POST "$API/purchase-orders" -H "Authorization: Bearer $STANDARD_TOKEN"
+```
+
+```powershell
+curl.exe -s -i -X POST "$api/purchase-orders" -H "Authorization: Bearer $env:STANDARD_TOKEN"
+```
+
+**RF-GP-06 — una solicitud resuelta no se vuelve a resolver.** Aprobar o rechazar de nuevo `REQUEST_ID` responde
+`409`. Repite las dos consultas SQL anteriores: la fila no cambió y sigue habiendo una sola concesión.
+
+```bash
+curl -s -i -X POST "$API/permission-requests/$REQUEST_ID/approve" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+```powershell
+curl.exe -s -i -X POST "$api/permission-requests/$env:REQUEST_ID/approve" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+```
+
+**RF-GP-04 — rechazar exige un motivo.** El STANDARD crea una segunda solicitud con el mismo comando de RF-GP-01;
+guarda su `id` como `SECOND_ID`. Si el ADMIN la rechaza sin motivo o con un motivo en blanco, recibe `400` y la
+solicitud sigue `PENDING`. Con motivo recibe `204`, y el SQL muestra `status = REJECTED`, `decided_by`, `decided_at`
+y `rejection_reason` tal como se escribió.
+
+```bash
+curl -s -i -X POST "$API/permission-requests/$SECOND_ID/reject" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"reason":"   "}'
+curl -s -i -X POST "$API/permission-requests/$SECOND_ID/reject" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"reason":"No business justification"}'
+```
+
+```powershell
+'{"reason":"   "}' | curl.exe -s -i -X POST "$api/permission-requests/$env:SECOND_ID/reject" `
+  -H "Authorization: Bearer $env:ADMIN_TOKEN" -H "Content-Type: application/json" --data-binary '@-'
+'{"reason":"No business justification"}' | curl.exe -s -i -X POST "$api/permission-requests/$env:SECOND_ID/reject" `
+  -H "Authorization: Bearer $env:ADMIN_TOKEN" -H "Content-Type: application/json" --data-binary '@-'
+```
+
+**RF-GP-07 — nadie resuelve su propia solicitud.** Si el ADMIN intenta aprobar o rechazar `ADMIN_REQUEST_ID`, ambas
+peticiones responden `409` y la fila sigue `PENDING`, sin concesión. Otro ADMIN sí podría resolverla (por ejemplo, un
+usuario promovido con `PATCH /api/v1/admin/users/{id}/role`).
+
+```bash
+curl -s -i -X POST "$API/permission-requests/$ADMIN_REQUEST_ID/approve" -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -i -X POST "$API/permission-requests/$ADMIN_REQUEST_ID/reject" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"reason":"Self review"}'
+```
+
+```powershell
+curl.exe -s -i -X POST "$api/permission-requests/$env:ADMIN_REQUEST_ID/approve" -H "Authorization: Bearer $env:ADMIN_TOKEN"
+'{"reason":"Self review"}' | curl.exe -s -i -X POST "$api/permission-requests/$env:ADMIN_REQUEST_ID/reject" `
+  -H "Authorization: Bearer $env:ADMIN_TOKEN" -H "Content-Type: application/json" --data-binary '@-'
+```
+
+Todas las comprobaciones usan IDs capturados y SQL de solo lectura: ningún criterio exige modificar tablas a mano.
+
+### Pruebas automáticas de la Asignación 2
+
+```bash
+./mvnw test                          # dominio, casos de uso y MVC (sin base de datos)
+./mvnw verify -Pintegration-test     # además, PostgreSQL real con Testcontainers (requiere Docker)
+```
+
+```powershell
+.\mvnw.cmd test
+.\mvnw.cmd verify -Pintegration-test
+```
+
+Ambos deben terminar con `BUILD SUCCESS`. Las pruebas de la asignación son:
+
+- **Unitarias y MVC:** `PermissionRequestTest`, `PermissionRequestTransitionPolicyTest`, `PermissionApplicationTest`,
+  `CreatePurchaseOrderTest`, `PermissionRequestWebTest` y `PurchaseOrderWebTest`.
+- **Integración:** `PermissionPersistenceIT`, `PermissionManagementIT`, `PermissionResolutionConcurrencyIT` y
+  `PermissionHttpIT`.

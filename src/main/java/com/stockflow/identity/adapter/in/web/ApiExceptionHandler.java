@@ -8,13 +8,21 @@ import com.stockflow.identity.application.InvalidCurrentPasswordException;
 import com.stockflow.identity.application.InvalidInputException;
 import com.stockflow.identity.application.InvalidPasswordResetTokenException;
 import com.stockflow.identity.application.UserNotFoundException;
+import com.stockflow.inventory.application.PurchaseOrderPermissionDeniedException;
+import com.stockflow.permission.application.PermissionActorNotAuthorizedException;
+import com.stockflow.permission.application.PermissionRequestNotFoundException;
+import com.stockflow.permission.application.PermissionSelfResolutionException;
+import com.stockflow.permission.domain.InvalidPermissionRequestException;
+import com.stockflow.permission.domain.InvalidPermissionRequestTransitionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -92,6 +100,43 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(InvalidPermissionRequestException.class)
+    ProblemDetail invalidPermissionRequest() {
+        return invalidRequest();
+    }
+
+    @ExceptionHandler({PermissionActorNotAuthorizedException.class, PurchaseOrderPermissionDeniedException.class})
+    ProblemDetail forbidden() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.FORBIDDEN);
+        problem.setTitle("Forbidden");
+        return problem;
+    }
+
+    @ExceptionHandler(PermissionRequestNotFoundException.class)
+    ProblemDetail permissionRequestNotFound() {
+        return userNotFound();
+    }
+
+    @ExceptionHandler({InvalidPermissionRequestTransitionException.class, PermissionSelfResolutionException.class})
+    ProblemDetail permissionConflict() {
+        // Genérico: no dice el estado actual ni si es auto-resolución.
+        return adminConflict();
+    }
+
+    /** JSON ilegible, cuerpo ausente o valor no convertible: sin el detalle por defecto, que repite lo recibido. */
+    @Override
+    protected ResponseEntity<Object> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        return ResponseEntity.badRequest().body(invalidRequest());
+    }
+
+    /** UUID u otro parámetro de ruta mal formado: el detalle por defecto incluye el valor recibido. */
+    @Override
+    protected ResponseEntity<Object> handleTypeMismatch(
+            TypeMismatchException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        return ResponseEntity.badRequest().body(invalidRequest());
+    }
+
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(
             MethodArgumentNotValidException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
@@ -106,6 +151,12 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         log.error("Unhandled error of type {}", ex.getClass().getName());
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         problem.setTitle("Internal server error");
+        return problem;
+    }
+
+    private static ProblemDetail invalidRequest() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid request");
         return problem;
     }
 
