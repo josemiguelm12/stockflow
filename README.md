@@ -181,20 +181,26 @@ limiting de la sección 8 puede responder `429` en las rutas `/api/v1/**`.
 
 ## 6. Pruebas
 
-`./mvnw test` (o `.\mvnw.cmd test`) ejecuta las pruebas unitarias y MVC (incluido un servidor SMTP de
-prueba en memoria), que no necesitan base de datos. Las pruebas de integración usan Testcontainers con PostgreSQL real y requieren
-Docker en ejecución:
+Un solo comando ejecuta la suite completa: primero las pruebas unitarias y MVC (Surefire, `*Test`, incluido un
+servidor SMTP de prueba en memoria) y después las de integración (Failsafe, `*IT`), que usan Testcontainers con
+PostgreSQL real. No hace falta levantar la aplicación ni una base de datos propia, pero Docker debe estar en
+ejecución.
+
+En Linux, macOS o Git Bash:
 
 ```bash
 ./mvnw verify -Pintegration-test
 ```
 
+En Windows (PowerShell):
+
 ```powershell
 .\mvnw.cmd verify -Pintegration-test
 ```
 
-Ambos comandos deben terminar con `BUILD SUCCESS`. Si Docker no está en ejecución, las pruebas de integración fallan
-al arrancar el contenedor; eso no indica un error del código.
+Debe terminar con `BUILD SUCCESS`, sin fallos ni errores en ninguna de las dos fases. Si Docker no está en ejecución,
+las pruebas de integración fallan al arrancar el contenedor; eso no indica un error del código. `./mvnw test` ejecuta
+solo la primera fase (unitarias y MVC) y no basta para validar la Gestión de Permisos.
 
 ## 7. Registro, activación y correo
 
@@ -596,19 +602,43 @@ Todas las comprobaciones usan IDs capturados y SQL de solo lectura: ningún crit
 
 ### Pruebas automáticas de la Asignación 2
 
+Se ejecutan con el comando único de la [sección 6](#6-pruebas) (requiere Docker):
+
 ```bash
-./mvnw test                          # dominio, casos de uso y MVC (sin base de datos)
-./mvnw verify -Pintegration-test     # además, PostgreSQL real con Testcontainers (requiere Docker)
+./mvnw verify -Pintegration-test
 ```
 
 ```powershell
-.\mvnw.cmd test
 .\mvnw.cmd verify -Pintegration-test
 ```
 
-Ambos deben terminar con `BUILD SUCCESS`. Las pruebas de la asignación son:
+Debe terminar con `BUILD SUCCESS`. Las pruebas de la asignación son:
 
 - **Unitarias y MVC:** `PermissionRequestTest`, `PermissionRequestTransitionPolicyTest`, `PermissionApplicationTest`,
   `CreatePurchaseOrderTest`, `PermissionRequestWebTest` y `PurchaseOrderWebTest`.
 - **Integración:** `PermissionPersistenceIT`, `PermissionManagementIT`, `PermissionResolutionConcurrencyIT` y
   `PermissionHttpIT`.
+
+## Defectos
+
+Defectos de la Práctica 2 (Variante B) sobre la Gestión de Permisos y la prueba existente que detecta cada uno. En la
+versión sana todas estas pruebas pasan; con el defecto plantado, la prueba indicada falla. Se ejecutan con el comando
+único de la [sección 6](#6-pruebas).
+
+| Defecto | RF | Prueba que lo detecta | Qué comprueba |
+|---|---|---|---|
+| B1 — el rechazo acepta un motivo vacío (`""`) | RF-GP-04 | `PermissionApplicationTest.aRejectionWithoutAWrittenReasonChangesNothing` | Con motivo `null`, `""`, `" "` y `"\t\n "`, el rechazo lanza `InvalidPermissionRequestException` y la solicitud queda intacta (`PENDING`, sin `decidedBy`, `decidedAt` ni motivo) y sin guardarse. |
+| B2 — se permite `APPROVED -> REJECTED` | RF-GP-06 | `PermissionRequestTest.rejectingAnApprovedRequestIsRejectedAndKeepsTheApproval`; `PermissionRequestTransitionPolicyTest.anApprovedRequestCannotBeRejected` | Rechazar una solicitud `APPROVED` lanza `InvalidPermissionRequestTransitionException` y conserva el estado y los datos de la aprobación; la política declara el par `APPROVED -> REJECTED` como no permitido. |
+| B3 — un STANDARD puede aprobar | RF-GP-03 | `PermissionApplicationTest.standardDisabledOrUnknownActorsCannotResolve` | Un actor `STANDARD` (y uno deshabilitado o desconocido) que intenta aprobar o rechazar recibe `PermissionActorNotAuthorizedException`; la solicitud no cambia y no se concede el permiso. |
+| B4 — se invierte la regla de auto-resolución | RF-GP-07 | `PermissionApplicationTest.anAdminCannotApproveOrRejectItsOwnRequest`; `PermissionApplicationTest.anotherAdminCanResolveAnAdminsRequest` | Un ADMIN que aprueba o rechaza su propia solicitud recibe `PermissionSelfResolutionException` y nada cambia; otro ADMIN sí la aprueba y queda `APPLIED` con la concesión para el solicitante. |
+| B5 — se permite `APPLIED -> REJECTED` | RF-GP-06 | `PermissionApplicationTest.anAppliedRequestCannotBeRejectedAfterwards`; `PermissionRequestTest.anAppliedRequestCannotBeApprovedRejectedOrAppliedAgain` | Rechazar una solicitud `APPLIED` lanza `InvalidPermissionRequestTransitionException`; la solicitud sigue `APPLIED` con su decisión y aplicación, y la concesión se mantiene. |
+| B6 — la aprobación no guarda `decidedBy` ni `decidedAt` | RF-GP-03 | `PermissionApplicationTest.anAdminApprovalAppliesThePermissionAndRecordsActorAndInstant` | Tras una aprobación válida, la solicitud guardada tiene `decidedBy` igual al ADMIN y `decidedAt` igual al instante de la aprobación, además de `APPLIED` y la concesión. |
+
+Detectores adicionales en integración (PostgreSQL real), según la auditoría de la suite:
+`PermissionManagementIT.aRejectionWithoutAWrittenReasonLeavesTheRowUntouched` y
+`PermissionHttpIT.aRejectionNeedsAWrittenReasonAndKeepsItLiteral` (B1);
+`PermissionManagementIT.aSecondApprovalOrALateRejectionChangesNoRowAndAddsNoGrant` (B5);
+`PermissionManagementIT.resolutionAndGlobalListingFollowThePersistedRoleAndStatus` y
+`PermissionHttpIT.unknownMalformedAndUnauthorizedResolutionsAreControlled` (B3);
+`PermissionHttpIT.anAdminCannotResolveItsOwnRequestButAnotherAdminCan` (B4);
+`PermissionManagementIT.approvalPersistsAppliedRequestAndExactlyOneGrantThatUnlocksPurchaseOrders` (B6).
