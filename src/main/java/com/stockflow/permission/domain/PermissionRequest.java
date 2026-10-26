@@ -76,7 +76,7 @@ public final class PermissionRequest {
 
     /** El rechazo solo se completa con un motivo escrito: no nulo, no vacío y no compuesto solo por espacios. */
     public void reject(UUID rejectedBy, Instant rejectedAt, String reason) {
-        requireValidReason(reason);
+        required(reason, "rejectionReason");
         decide(REJECTED, rejectedBy, rejectedAt, reason);
     }
 
