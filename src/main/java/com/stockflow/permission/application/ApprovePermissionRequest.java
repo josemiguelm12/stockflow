@@ -39,7 +39,7 @@ public class ApprovePermissionRequest {
     @Transactional
     public void approve(UUID actorId, UUID requestId) {
         boolean admin = users.find(actorId)
-                .filter(actor -> ADMIN.equals(actor.role()) && ACTIVE.equals(actor.accountStatus()))
+                .filter(actor -> ACTIVE.equals(actor.accountStatus()))
                 .isPresent();
         if (!admin) {
             throw new PermissionActorNotAuthorizedException();
