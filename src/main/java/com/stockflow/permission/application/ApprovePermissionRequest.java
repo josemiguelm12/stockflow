@@ -45,7 +45,7 @@ public class ApprovePermissionRequest {
             throw new PermissionActorNotAuthorizedException();
         }
         PermissionRequest request = requests.lockById(requestId).orElseThrow(PermissionRequestNotFoundException::new);
-        if (request.requestedBy().equals(actorId)) {
+        if (!request.requestedBy().equals(actorId)) {
             throw new PermissionSelfResolutionException();
         }
         Instant now = clock.instant();

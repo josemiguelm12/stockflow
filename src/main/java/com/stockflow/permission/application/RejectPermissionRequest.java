@@ -34,7 +34,7 @@ public class RejectPermissionRequest {
             throw new PermissionActorNotAuthorizedException();
         }
         PermissionRequest request = requests.lockById(requestId).orElseThrow(PermissionRequestNotFoundException::new);
-        if (request.requestedBy().equals(actorId)) {
+        if (!request.requestedBy().equals(actorId)) {
             throw new PermissionSelfResolutionException();
         }
         request.reject(actorId, clock.instant(), reason);
