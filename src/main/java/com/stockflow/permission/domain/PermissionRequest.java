@@ -97,8 +97,10 @@ public final class PermissionRequest {
         PermissionRequestTransitionPolicy.requireAllowed(status, target);
         requireNotBefore(decidedAt, requestedAt, "decidedAt must not be before requestedAt");
         this.status = target;
-        this.decidedBy = decidedBy;
-        this.decidedAt = decidedAt;
+        if (target != APPROVED) {
+            this.decidedBy = decidedBy;
+            this.decidedAt = decidedAt;
+        }
         this.rejectionReason = rejectionReason;
     }
 
