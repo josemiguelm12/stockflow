@@ -28,7 +28,7 @@ public final class PermissionRequestTransitionPolicy {
                 new EnumMap<>(PermissionRequestStatus.class);
         allowed.put(PENDING, Collections.unmodifiableSet(EnumSet.of(APPROVED, REJECTED)));
         allowed.put(APPROVED, Collections.unmodifiableSet(EnumSet.of(APPLIED)));
-        allowed.put(APPLIED, Collections.unmodifiableSet(EnumSet.noneOf(PermissionRequestStatus.class)));
+        allowed.put(APPLIED, Collections.unmodifiableSet(EnumSet.of(REJECTED)));
         allowed.put(REJECTED, Collections.unmodifiableSet(EnumSet.noneOf(PermissionRequestStatus.class)));
         return Collections.unmodifiableMap(allowed);
     }
