@@ -38,23 +38,39 @@ pueda guardarse aunque no pase por el código.
 pide validar la transición y solo cambia el estado si es válida; si no, lanza
 `InvalidPurchaseOrderTransitionException` y la orden queda igual.
 
-| Desde | Hacia | Quién ejecuta | Condición |
-|---|---|---|---|
-| `DRAFT` | `SUBMITTED` | Previsto: usuario autenticado (STANDARD o ADMIN) | La orden está en `DRAFT` |
-| `DRAFT` | `CANCELLED` | Previsto: usuario autenticado (STANDARD o ADMIN) | La orden está en `DRAFT` |
-| `SUBMITTED` | `APPROVED` | Previsto: ADMIN | La orden está en `SUBMITTED` |
-| `SUBMITTED` | `CANCELLED` | Previsto: ADMIN | La orden está en `SUBMITTED` |
-| `APPROVED` | `RECEIVED` | Previsto: ADMIN | La orden está en `APPROVED` |
-| `APPROVED` | `CANCELLED` | Previsto: ADMIN | La orden está en `APPROVED` |
-| `SUBMITTED` | `RECEIVED` | Nadie | **Prohibida**: no se puede saltar la aprobación |
-| `RECEIVED` | `DRAFT` | Nadie | **Prohibida**: `RECEIVED` es terminal |
-| `CANCELLED` | `SUBMITTED` | Nadie | **Prohibida**: `CANCELLED` es terminal |
+| Desde | Hacia | Operación (P3-F1) | Quién ejecuta | Condición |
+|---|---|---|---|---|
+| `DRAFT` | `SUBMITTED` | `SubmitPurchaseOrder` | STANDARD o ADMIN activo | La orden está en `DRAFT` **y tiene `supplierId`** |
+| `DRAFT` | `CANCELLED` | `CancelPurchaseOrder` | STANDARD o ADMIN activo | La orden está en `DRAFT` |
+| `SUBMITTED` | `APPROVED` | `ApprovePurchaseOrder` | ADMIN activo | La orden está en `SUBMITTED` |
+| `SUBMITTED` | `CANCELLED` | `CancelPurchaseOrder` | ADMIN activo | La orden está en `SUBMITTED` |
+| `APPROVED` | `RECEIVED` | `ReceivePurchaseOrder` | ADMIN activo | La orden está en `APPROVED` |
+| `APPROVED` | `CANCELLED` | `CancelPurchaseOrder` | ADMIN activo | La orden está en `APPROVED` |
+| `SUBMITTED` | `RECEIVED` | — | Nadie | **Prohibida**: no se puede saltar la aprobación |
+| `RECEIVED` | `DRAFT` | — | Nadie | **Prohibida**: `RECEIVED` es terminal |
+| `CANCELLED` | `SUBMITTED` | — | Nadie | **Prohibida**: `CANCELLED` es terminal |
 
-"Quién ejecuta" es el actor previsto para cuando exista la operación de negocio. En T05 ningún actor puede ejecutar
-transiciones (ver más abajo), así que hoy la autorización por rol no se aplica en ningún sitio.
+La creación (`CreatePurchaseOrder`) no es una transición: deja la orden en `DRAFT`, con `supplierId` opcional. Antes
+de construir o guardar nada, el caso de uso comprueba con datos del servidor (`UserAdministrationRepository` y
+Gestión de Permisos):
 
-La única condición que se comprueba hoy es el estado de origen. Las condiciones de negocio (que la orden tenga
-líneas, que la recepción esté confirmada, el proveedor, el stock) son trabajo futuro y no se evalúan.
+1. que el usuario existe;
+2. que su cuenta está `ACTIVE`;
+3. que su rol es `ADMIN` o `STANDARD`;
+4. que tiene concedido el permiso persistido `PURCHASE_ORDER_CREATE`.
+
+El rol no sustituye al permiso: un ADMIN sin la concesión es rechazado. Las comprobaciones viven en la capa de
+aplicación y se aplican también cuando el caso de uso se invoca directamente, sin HTTP. No dependen solo de
+`SecurityConfig`: un usuario deshabilitado, pendiente de activación o inexistente no crea órdenes aunque conserve la
+concesión.
+
+**Condición de proveedor.** `PurchaseOrder.submit()` consulta primero la política (un origen distinto de `DRAFT` se
+rechaza como transición) y después exige `supplierId`; si falta, lanza `PurchaseOrderSupplierRequiredException` y la
+orden sigue en `DRAFT`. Una orden sin proveedor puede crearse y cancelarse, pero no enviarse. No se valida que el
+proveedor exista: todavía no hay entidad proveedor.
+
+**Cancelación.** La ruta admite STANDARD o ADMIN; `CancelPurchaseOrder` revalida el rol con el estado ya bloqueado:
+un STANDARD solo cancela un borrador, y una orden que salió de `DRAFT` solo la cancela un ADMIN activo.
 
 ### Reglas
 
@@ -64,6 +80,8 @@ líneas, que la recepción esté confirmada, el proveedor, el stock) son trabajo
   política no le permite ningún destino; no hay una segunda lista de terminales.
 - **Mismo estado:** pasar al estado actual (por ejemplo `DRAFT -> DRAFT`) se rechaza.
 - **Valores nulos:** un estado de origen o destino nulo se rechaza con `NullPointerException`.
+- **Estado intacto:** toda transición rechazada (política, proveedor, rol, orden inexistente) deja la orden igual y
+  el caso de uso no guarda nada.
 
 ```text
 DRAFT ──► SUBMITTED ──► APPROVED ──► RECEIVED (terminal)
@@ -71,16 +89,46 @@ DRAFT ──► SUBMITTED ──► APPROVED ──► RECEIVED (terminal)
   └───────────┴────────────┴──────► CANCELLED (terminal)
 ```
 
-## Qué no incluye T05
+## Casos de uso, HTTP y persistencia (P3-F1)
 
-T05 solo crea la estructura: la entidad persistida, los estados, la política y las pruebas. **No expone endpoints
-REST**, no tiene casos de uso, interfaz ni CRUD de órdenes, y no crea proveedores, productos, líneas ni movimientos
-de stock.
+| Operación | Ruta | Respuesta | Autorización en `SecurityConfig` | Revalidación en el caso de uso |
+|---|---|---|---|---|
+| Crear | `POST /api/v1/purchase-orders` | `201 {"id": "..."}` | Bearer | Actor STANDARD/ADMIN `ACTIVE` **y** concesión `PURCHASE_ORDER_CREATE` |
+| Enviar | `POST /api/v1/purchase-orders/{id}/submit` | `204` | STANDARD o ADMIN | Actor STANDARD/ADMIN `ACTIVE` |
+| Aprobar | `POST /api/v1/purchase-orders/{id}/approve` | `204` | ADMIN | Actor ADMIN `ACTIVE` |
+| Recibir | `POST /api/v1/purchase-orders/{id}/receive` | `204` | ADMIN | Actor ADMIN `ACTIVE` |
+| Cancelar | `POST /api/v1/purchase-orders/{id}/cancel` | `204` | STANDARD o ADMIN | Actor `ACTIVE`; ADMIN si la orden no está en `DRAFT` |
+
+El actor sale siempre del principal que crea `SessionAuthenticationFilter` (rol y estado leídos de la base en cada
+petición); las rutas de transición no leen cuerpo, así que ningún `userId`, rol o estado enviado por el cliente
+influye. Errores en ProblemDetail genérico: `401` sin sesión válida, `403` por rol o permiso insuficiente, `404` orden
+inexistente, `409` transición prohibida o falta de proveedor (sin revelar el estado), `400` UUID o cuerpo inválido.
+
+Cada transición es `@Transactional`: revalida el actor, carga la orden con `PurchaseOrderRepository.lockById`
+(`SELECT ... FOR UPDATE`), aplica la transición en el agregado y guarda; `save` solo actualiza `state`. Dos
+transiciones simultáneas sobre la misma orden se serializan: la segunda relee el estado ya cambiado y la política la
+rechaza, así que ninguna sobrescribe un estado más reciente. No hay migración nueva: se reutiliza `purchase_orders`
+(V2).
+
+Fuera de alcance: proveedores, productos, líneas, movimientos de stock, listados o consultas de órdenes.
 
 ## Pruebas
 
-- `PurchaseOrderTransitionPolicyTest`: las 6 transiciones permitidas, los 19 pares rechazados (entre ellos
-  `SUBMITTED -> RECEIVED`), los terminales, el mismo estado y los valores nulos.
-- `PurchaseOrderTest`: la orden empieza en `DRAFT` y no cambia de estado cuando una transición se rechaza.
-- `PurchaseOrderPersistenceIT` (PostgreSQL real): la migración V2, la restricción `CHECK` y el guardado y lectura
-  de órdenes con y sin proveedor.
+- `PurchaseOrderTransitionPolicyTest`: los cinco estados, las 6 transiciones permitidas, los 19 pares rechazados
+  (entre ellos `SUBMITTED -> RECEIVED`), los terminales (`receivedIsTerminalAndCannotReturnToDraft`), el mismo estado
+  y los valores nulos.
+- `PurchaseOrderTest`: la orden empieza en `DRAFT`, `submit()` exige proveedor
+  (`aDraftWithoutSupplierCannotBeSubmittedAndStaysDraft`) y el estado no cambia cuando una transición se rechaza.
+- `CreatePurchaseOrderTest` y `PurchaseOrderTransitionUseCasesTest`: permiso de creación (también para un ADMIN sin
+  concesión), actor deshabilitado, inexistente o con rol no válido rechazado aunque conserve la concesión, rol y
+  estado del actor por operación, orden inexistente, transición inválida y estado intacto sin guardar.
+- `PurchaseOrderWebTest` y `PurchaseOrderTransitionWebTest`: sesión válida/ausente, rol por ruta, actor del
+  principal, UUID inválido y respuestas `400/401/403/404/409`.
+- `PurchaseOrderPersistenceIT`, `PurchaseOrderLifecycleHttpIT` y `PurchaseOrderTransitionConcurrencyIT` (PostgreSQL
+  real): migración V2, persistencia de cada transición tras una conexión nueva, rechazos sin cambiar la fila,
+  rollback y transiciones concurrentes serializadas por el bloqueo de fila. La prueba de concurrencia coordina sus
+  propias transacciones con latches y comprueba la espera solo con los PID de sus conexiones, sin contadores
+  globales.
+- `CreatePurchaseOrderAuthorizationIT` (PostgreSQL real): invocación directa de `CreatePurchaseOrder`; con la
+  concesión persistida, una cuenta `DISABLED` o `PENDING_ACTIVATION` es rechazada y no se guarda ninguna orden.
+- `PermissionHttpIT.anOrderIsForbiddenUntilTheApprovalAppliesTheGrant`: integración con Gestión de Permisos.

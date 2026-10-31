@@ -143,7 +143,8 @@ Seguridad HTTP: solo `GET /api/health`, `GET /activate`, `GET /reset-password`, 
 sección 7, `POST /api/v1/auth/login` y `POST /api/v1/auth/password/{forgot,reset}` son públicos;
 `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` y `POST /api/v1/auth/password/change` exigen Bearer; las rutas
 `/api/v1/admin/users…` de la sección 10 exigen Bearer de un usuario con rol `ADMIN`; en Gestión de Permisos
-(sección 14), crear y listar solicitudes y crear órdenes exigen Bearer, y aprobar o rechazar exige rol `ADMIN`;
+(sección 14), crear y listar solicitudes y crear órdenes exigen Bearer, y aprobar o rechazar exige rol `ADMIN`; en
+Órdenes de Compra (sección 15), enviar y cancelar exigen rol `STANDARD` o `ADMIN` y aprobar o recibir rol `ADMIN`;
 cualquier otra ruta se deniega (401 sin credenciales, 403 con ellas).
 
 ### Endpoints y acceso
@@ -175,6 +176,10 @@ Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10
 | POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (queda `APPLIED` y se concede el permiso); STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
 | POST | `/api/v1/permission-requests/{id}/reject` | Bearer ADMIN | `{"reason"}` | `204`; motivo ausente o en blanco `400`; STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
 | POST | `/api/v1/purchase-orders` | Bearer | `{"supplierId"}` opcional | `201 {"id"}` con el permiso `PURCHASE_ORDER_CREATE` concedido; sin él `403`, también para un ADMIN |
+| POST | `/api/v1/purchase-orders/{id}/submit` | Bearer STANDARD o ADMIN | Sin cuerpo | `204` (`DRAFT -> SUBMITTED`); sin proveedor o fuera de `DRAFT` `409`; inexistente `404` |
+| POST | `/api/v1/purchase-orders/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (`SUBMITTED -> APPROVED`); STANDARD `403`; inexistente `404`; otro estado `409` |
+| POST | `/api/v1/purchase-orders/{id}/receive` | Bearer ADMIN | Sin cuerpo | `204` (`APPROVED -> RECEIVED`); STANDARD `403`; inexistente `404`; otro estado `409` |
+| POST | `/api/v1/purchase-orders/{id}/cancel` | Bearer STANDARD o ADMIN | Sin cuerpo | `204` (`-> CANCELLED`); STANDARD fuera de `DRAFT` `403`; inexistente `404`; terminal `409` |
 
 Cualquier ruta o método que no esté en la tabla responde `401` sin credenciales o `403` con ellas. Además, el rate
 limiting de la sección 8 puede responder `429` en las rutas `/api/v1/**`.
@@ -363,9 +368,9 @@ contraseña del entorno: con el bootstrap deshabilitado la aplicación arranca n
 ## 11. Máquina de estados de la Orden de Compra
 
 Los estados y transiciones de `PurchaseOrder` (migración `V2__purchase_order_state_machine.sql`) están documentados
-en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). El único endpoint es `POST /api/v1/purchase-orders`
-(sección 14), que crea una orden en `DRAFT` solo si el usuario tiene concedido `PURCHASE_ORDER_CREATE`; las
-transiciones todavía no tienen endpoints.
+en [docs/maquina-de-estados.md](docs/maquina-de-estados.md). `POST /api/v1/purchase-orders` (sección 14) crea una
+orden en `DRAFT` solo si el usuario tiene concedido `PURCHASE_ORDER_CREATE`; las transiciones (enviar, aprobar,
+recibir y cancelar) se describen en la [sección 15](#15-gestión-de-órdenes-de-compra-práctica-3).
 
 ## 12. Verificación de la Práctica 1
 
@@ -619,6 +624,53 @@ Debe terminar con `BUILD SUCCESS`. Las pruebas de la asignación son:
 - **Integración:** `PermissionPersistenceIT`, `PermissionManagementIT`, `PermissionResolutionConcurrencyIT` y
   `PermissionHttpIT`.
 
+## 15. Gestión de Órdenes de Compra (Práctica 3)
+
+Cinco funcionalidades separables del módulo `inventory`, todas sobre la misma máquina de estados
+(`PurchaseOrderTransitionPolicy`, ver [docs/maquina-de-estados.md](docs/maquina-de-estados.md)):
+
+| Funcionalidad | Ruta | Acceso | Efecto |
+|---|---|---|---|
+| `CreatePurchaseOrder` | `POST /api/v1/purchase-orders` | STANDARD o ADMIN activo **y** `PURCHASE_ORDER_CREATE` concedido | `201 {"id"}`, orden en `DRAFT`; `supplierId` opcional |
+| `SubmitPurchaseOrder` | `POST /api/v1/purchase-orders/{id}/submit` | STANDARD o ADMIN activo | `204`, `DRAFT -> SUBMITTED`; exige `supplierId` |
+| `ApprovePurchaseOrder` | `POST /api/v1/purchase-orders/{id}/approve` | ADMIN activo | `204`, `SUBMITTED -> APPROVED` |
+| `ReceivePurchaseOrder` | `POST /api/v1/purchase-orders/{id}/receive` | ADMIN activo | `204`, `APPROVED -> RECEIVED` |
+| `CancelPurchaseOrder` | `POST /api/v1/purchase-orders/{id}/cancel` | STANDARD o ADMIN activo; ADMIN si la orden ya salió de `DRAFT` | `204`, `DRAFT/SUBMITTED/APPROVED -> CANCELLED` |
+
+- **Identidad:** el actor sale siempre del Bearer y su rol y estado se releen de la base en cada operación. Las rutas
+  de transición no leen cuerpo: ningún `userId`, rol o estado enviado por el cliente influye.
+- **Creación:** `CreatePurchaseOrder` comprueba en la capa de aplicación, con datos del servidor y antes de guardar
+  nada: (1) que el usuario existe, (2) que su cuenta está `ACTIVE`, (3) que su rol es `ADMIN` o `STANDARD` y (4) que
+  tiene concedido `PURCHASE_ORDER_CREATE`. El rol no sustituye al permiso: un ADMIN sin la concesión recibe `403`.
+  Estas comprobaciones también se aplican cuando el caso de uso se invoca directamente, sin HTTP, así que no dependen
+  solo de `SecurityConfig`: un usuario deshabilitado, pendiente de activación o inexistente no crea órdenes aunque
+  conserve la concesión.
+- **Errores** (`application/problem+json`, sin estados internos ni SQL): `400` UUID o cuerpo inválido; `401` sin
+  Bearer válido; `403` rol o permiso insuficiente; `404` orden inexistente; `409` transición prohibida, estado
+  terminal o envío sin proveedor. Un rechazo deja la orden exactamente como estaba.
+- **Concurrencia:** cada transición es transaccional y carga la orden con `SELECT ... FOR UPDATE`; dos transiciones
+  simultáneas sobre la misma orden se serializan y la segunda se evalúa contra el estado ya cambiado.
+- **Persistencia:** se reutiliza la tabla `purchase_orders` (V2); no hay migración nueva y una transición solo
+  actualiza `state`.
+
+### Pruebas automáticas de la Práctica 3
+
+La suite completa (Control de acceso, Gestión de Permisos y Órdenes de Compra) se ejecuta con el comando único de la
+[sección 6](#6-pruebas) (requiere Docker):
+
+```powershell
+.\mvnw.cmd verify -Pintegration-test
+```
+
+Debe terminar con `BUILD SUCCESS`. Las pruebas del módulo de negocio son:
+
+- **Unitarias y MVC:** `PurchaseOrderTransitionPolicyTest`, `PurchaseOrderTest`, `CreatePurchaseOrderTest`,
+  `PurchaseOrderTransitionUseCasesTest`, `PurchaseOrderWebTest` y `PurchaseOrderTransitionWebTest`.
+- **Integración:** `PurchaseOrderPersistenceIT`, `PurchaseOrderLifecycleHttpIT`,
+  `PurchaseOrderTransitionConcurrencyIT`, `CreatePurchaseOrderAuthorizationIT` (invocación directa de la creación con
+  la cuenta deshabilitada o pendiente de activación) y
+  `PermissionHttpIT.anOrderIsForbiddenUntilTheApprovalAppliesTheGrant` (integración con Gestión de Permisos).
+
 ## Defectos
 
 Defectos de la Práctica 2 (Variante B) sobre la Gestión de Permisos y la prueba existente que detecta cada uno. En la
@@ -642,3 +694,15 @@ Detectores adicionales en integración (PostgreSQL real), según la auditoría d
 `PermissionHttpIT.unknownMalformedAndUnauthorizedResolutionsAreControlled` (B3);
 `PermissionHttpIT.anAdminCannotResolveItsOwnRequestButAnotherAdminCan` (B4);
 `PermissionManagementIT.approvalPersistsAppliedRequestAndExactlyOneGrantThatUnlocksPurchaseOrders` (B6).
+
+### Defectos de la Práctica 3 (detectores preparados)
+
+Mutaciones previstas sobre el módulo de Órdenes de Compra y la prueba existente que debe detectar cada una. **Ninguna
+está plantada**: en la versión sana todas estas pruebas pasan.
+
+| Defecto | Mutación | Prueba que lo detecta | Qué comprueba |
+|---|---|---|---|
+| P3-1 | La política permite `SUBMITTED -> RECEIVED` | `PurchaseOrderTransitionPolicyTest.submittedCannotSkipApprovalToReceived`; `PurchaseOrderTransitionPolicyTest.everyOtherPairIsRejectedByDefault` (tabla escrita a mano); `PurchaseOrderTransitionUseCasesTest.aSubmittedOrderCannotBeReceivedWithoutApproval` | El par `SUBMITTED -> RECEIVED` no está permitido y recibir una orden `SUBMITTED` lanza `InvalidPurchaseOrderTransitionException` sin cambiar ni guardar la orden. |
+| P3-2 | La política permite `RECEIVED -> DRAFT` | `PurchaseOrderTransitionPolicyTest.receivedIsTerminalAndCannotReturnToDraft`; `PurchaseOrderTransitionPolicyTest.terminalStatesHaveNoExits`; `PurchaseOrderTransitionPolicyTest.onlyReceivedAndCancelledAreTerminal` | `RECEIVED` es terminal: no tiene destinos y `RECEIVED -> DRAFT` se rechaza. |
+| P3-3 | Enviar no exige `supplierId` | `PurchaseOrderTest.aDraftWithoutSupplierCannotBeSubmittedAndStaysDraft`; `PurchaseOrderTransitionUseCasesTest.submittingADraftWithoutSupplierIsRejectedAndKeepsDraft`; `PurchaseOrderLifecycleHttpIT.submittingWithoutSupplierIs409AndTheRowStaysDraft` | Una orden sin proveedor no pasa de `DRAFT` a `SUBMITTED`: se lanza `PurchaseOrderSupplierRequiredException` (HTTP `409`) y la orden sigue en `DRAFT`. |
+| P3-4 | Crear una orden no consulta Gestión de Permisos | `PermissionHttpIT.anOrderIsForbiddenUntilTheApprovalAppliesTheGrant` | Sin la concesión `PURCHASE_ORDER_CREATE`, STANDARD y ADMIN reciben `403` y no se crea ninguna orden; tras la aprobación de un ADMIN, el STANDARD crea la orden y queda persistida en `DRAFT`. |

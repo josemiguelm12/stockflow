@@ -11,4 +11,10 @@ public interface PurchaseOrderRepository {
     void save(PurchaseOrder order);
 
     Optional<PurchaseOrder> findById(UUID id);
+
+    /**
+     * Bloquea (FOR UPDATE) la fila de la orden hasta el fin de la transacción, que debe existir: serializa las
+     * transiciones sobre una misma orden. Mismo mapeo que {@link #findById}.
+     */
+    Optional<PurchaseOrder> lockById(UUID id);
 }

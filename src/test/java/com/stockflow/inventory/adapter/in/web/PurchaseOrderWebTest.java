@@ -141,7 +141,8 @@ class PurchaseOrderWebTest {
         mvc.perform(get(ORDERS).header("Authorization", "Bearer admin-token")).andExpect(status().isForbidden());
         mvc.perform(get(ORDERS + "/" + ORDER_ID).header("Authorization", "Bearer admin-token"))
                 .andExpect(status().isForbidden());
-        mvc.perform(post(ORDERS + "/" + ORDER_ID + "/submit").header("Authorization", "Bearer admin-token"))
+        // P3-F1 abre submit/approve/receive/cancel (PurchaseOrderTransitionWebTest); el resto sigue cerrado.
+        mvc.perform(post(ORDERS + "/" + ORDER_ID + "/reopen").header("Authorization", "Bearer admin-token"))
                 .andExpect(status().isForbidden());
         verifyNoInteractions(createPurchaseOrder);
     }

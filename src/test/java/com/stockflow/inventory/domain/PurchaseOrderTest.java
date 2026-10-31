@@ -12,6 +12,7 @@ import static com.stockflow.inventory.domain.PurchaseOrderStatus.RECEIVED;
 import static com.stockflow.inventory.domain.PurchaseOrderStatus.SUBMITTED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 class PurchaseOrderTest {
 
@@ -74,6 +75,63 @@ class PurchaseOrderTest {
                 .isInstanceOf(NullPointerException.class);
 
         assertThat(order.status()).isEqualTo(SUBMITTED);
+    }
+
+    @Test
+    void submittingADraftWithASupplierMovesItToSubmitted() {
+        // Arrange
+        UUID supplierId = UUID.randomUUID();
+        PurchaseOrder order = PurchaseOrder.create(UUID.randomUUID(), supplierId, CREATED_AT);
+
+        // Act
+        order.submit();
+
+        // Assert
+        assertThat(order.status()).isEqualTo(SUBMITTED);
+        assertThat(order.supplierId()).contains(supplierId);
+    }
+
+    /** Detector P3-3: una orden sin proveedor existe en DRAFT, pero no puede enviarse. */
+    @Test
+    void aDraftWithoutSupplierCannotBeSubmittedAndStaysDraft() {
+        // Arrange
+        PurchaseOrder order = PurchaseOrder.create(UUID.randomUUID(), null, CREATED_AT);
+
+        // Act
+        Throwable thrown = catchThrowable(order::submit);
+
+        // Assert
+        assertThat(thrown).isInstanceOf(PurchaseOrderSupplierRequiredException.class);
+        assertThat(order.status()).isEqualTo(DRAFT);
+        assertThat(order.supplierId()).isEmpty();
+    }
+
+    @Test
+    void onlyADraftCanBeSubmittedEvenWithASupplier() {
+        for (PurchaseOrderStatus from : new PurchaseOrderStatus[]{SUBMITTED, APPROVED, RECEIVED, CANCELLED}) {
+            // Arrange
+            PurchaseOrder order = PurchaseOrder.restore(UUID.randomUUID(), UUID.randomUUID(), from, CREATED_AT);
+
+            // Act
+            Throwable thrown = catchThrowable(order::submit);
+
+            // Assert
+            assertThat(thrown).as(from.name()).isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+            assertThat(order.status()).isEqualTo(from);
+        }
+    }
+
+    @Test
+    void aNonDraftWithoutSupplierIsRejectedByThePolicyFirst() {
+        // Arrange
+        PurchaseOrder order = PurchaseOrder.restore(UUID.randomUUID(), null, CANCELLED, CREATED_AT);
+
+        // Act
+        Throwable thrown = catchThrowable(order::submit);
+
+        // Assert
+        assertThat(thrown).isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        assertThat(order.status()).isEqualTo(CANCELLED);
     }
 
     @Test

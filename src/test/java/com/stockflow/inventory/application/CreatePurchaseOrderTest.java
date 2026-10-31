@@ -1,10 +1,13 @@
 package com.stockflow.inventory.application;
 
+import com.stockflow.identity.application.UserAdministrationRepository;
+import com.stockflow.identity.application.UserAdministrationRepository.ManagedUser;
 import com.stockflow.inventory.domain.PurchaseOrder;
 import com.stockflow.permission.application.GrantedPermission;
 import com.stockflow.permission.application.PermissionChecker;
 import com.stockflow.permission.application.UserPermissionRepository;
 import com.stockflow.permission.domain.PermissionCode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -21,20 +24,44 @@ import static com.stockflow.inventory.domain.PurchaseOrderStatus.DRAFT;
 import static com.stockflow.permission.domain.PermissionCode.PURCHASE_ORDER_CREATE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-/** RF-GP-05: crear una orden exige la concesión persistida de PURCHASE_ORDER_CREATE; ningún rol la sustituye. */
+/**
+ * RF-GP-05 y P3-F1: crear una orden exige un actor persistido ACTIVE con rol STANDARD o ADMIN y, además, la concesión
+ * persistida de PURCHASE_ORDER_CREATE; ningún rol la sustituye y conservarla no basta a una cuenta deshabilitada.
+ */
 class CreatePurchaseOrderTest {
 
     private static final UUID GRANTED_USER = UUID.fromString("00000000-0000-0000-0000-00000000a401");
     private static final UUID USER_WITHOUT_GRANT = UUID.fromString("00000000-0000-0000-0000-00000000a402");
+    private static final UUID GRANTED_ADMIN = UUID.fromString("00000000-0000-0000-0000-00000000a403");
+    private static final UUID ADMIN_WITHOUT_GRANT = UUID.fromString("00000000-0000-0000-0000-00000000a404");
+    private static final UUID DISABLED_WITH_GRANT = UUID.fromString("00000000-0000-0000-0000-00000000a405");
+    private static final UUID UNKNOWN_WITH_GRANT = UUID.fromString("00000000-0000-0000-0000-00000000a406");
+    private static final UUID INVALID_ROLE_WITH_GRANT = UUID.fromString("00000000-0000-0000-0000-00000000a407");
     private static final UUID SOURCE_REQUEST = UUID.fromString("00000000-0000-0000-0000-00000000b401");
     private static final UUID SUPPLIER = UUID.fromString("00000000-0000-0000-0000-00000000d401");
     private static final Instant NOW = Instant.parse("2026-04-03T08:30:00Z");
 
+    private final UserAdministrationRepository users = mock(UserAdministrationRepository.class);
     private final FakeGrants grants = new FakeGrants();
     private final FakeOrders orders = new FakeOrders();
-    private final CreatePurchaseOrder createOrder = new CreatePurchaseOrder(new PermissionChecker(grants), orders,
-            Clock.fixed(NOW, ZoneOffset.UTC));
+    private final CreatePurchaseOrder createOrder = new CreatePurchaseOrder(users, new PermissionChecker(grants),
+            orders, Clock.fixed(NOW, ZoneOffset.UTC));
+
+    /** Actores tal como los devuelve identity; UNKNOWN_WITH_GRANT no existe. */
+    @BeforeEach
+    void actors() {
+        when(users.find(any())).thenReturn(Optional.empty());
+        user(GRANTED_USER, "STANDARD", "ACTIVE");
+        user(USER_WITHOUT_GRANT, "STANDARD", "ACTIVE");
+        user(GRANTED_ADMIN, "ADMIN", "ACTIVE");
+        user(ADMIN_WITHOUT_GRANT, "ADMIN", "ACTIVE");
+        user(DISABLED_WITH_GRANT, "STANDARD", "DISABLED");
+        user(INVALID_ROLE_WITH_GRANT, "AUDITOR", "ACTIVE");
+    }
 
     @Test
     void aUserWithoutTheGrantIsRejectedBeforeAnyOrderIsSaved() {
@@ -94,6 +121,85 @@ class CreatePurchaseOrderTest {
         assertThat(orders.rows).isEmpty();
     }
 
+    @Test
+    void anActiveAdminWithThePersistedGrantCreatesADraftOrder() {
+        // Arrange
+        grant(GRANTED_ADMIN);
+
+        // Act
+        UUID id = createOrder.create(GRANTED_ADMIN, SUPPLIER);
+
+        // Assert
+        assertThat(orders.rows).containsOnlyKeys(id);
+        assertThat(orders.rows.get(id).status()).isEqualTo(DRAFT);
+    }
+
+    @Test
+    void anActiveAdminWithoutTheGrantIsRejectedBecauseTheRoleDoesNotReplaceIt() {
+        // Arrange
+        // (ADMIN_WITHOUT_GRANT es ADMIN y ACTIVE, pero no tiene concesión)
+
+        // Act
+        Throwable thrown = catchThrowable(() -> createOrder.create(ADMIN_WITHOUT_GRANT, SUPPLIER));
+
+        // Assert
+        assertThat(thrown).isInstanceOf(PurchaseOrderPermissionDeniedException.class);
+        assertThat(grants.checks).containsExactly(ADMIN_WITHOUT_GRANT + ":" + PURCHASE_ORDER_CREATE);
+        assertThat(orders.rows).isEmpty();
+    }
+
+    /** Invocación directa sin HTTP: una cuenta DISABLED que conserva la concesión no crea órdenes. */
+    @Test
+    void aDisabledUserWhoKeepsTheGrantIsRejectedAndNothingIsSaved() {
+        // Arrange
+        grant(DISABLED_WITH_GRANT);
+
+        // Act
+        Throwable thrown = catchThrowable(() -> createOrder.create(DISABLED_WITH_GRANT, SUPPLIER));
+
+        // Assert
+        assertThat(thrown).isInstanceOf(PurchaseOrderActorNotAuthorizedException.class);
+        assertThat(grants.checks).as("the actor is rejected before the grant is consulted").isEmpty();
+        assertThat(orders.rows).isEmpty();
+    }
+
+    @Test
+    void anUnknownUserWithAResidualGrantIsRejectedAndNothingIsSaved() {
+        // Arrange
+        grant(UNKNOWN_WITH_GRANT);
+
+        // Act
+        Throwable thrown = catchThrowable(() -> createOrder.create(UNKNOWN_WITH_GRANT, SUPPLIER));
+
+        // Assert
+        assertThat(thrown).isInstanceOf(PurchaseOrderActorNotAuthorizedException.class);
+        assertThat(grants.checks).isEmpty();
+        assertThat(orders.rows).isEmpty();
+    }
+
+    @Test
+    void anActiveUserWithARoleOtherThanStandardOrAdminIsRejectedEvenWithTheGrant() {
+        // Arrange
+        grant(INVALID_ROLE_WITH_GRANT);
+
+        // Act
+        Throwable thrown = catchThrowable(() -> createOrder.create(INVALID_ROLE_WITH_GRANT, SUPPLIER));
+
+        // Assert
+        assertThat(thrown).isInstanceOf(PurchaseOrderActorNotAuthorizedException.class);
+        assertThat(orders.rows).isEmpty();
+    }
+
+    // ---- utilidades ----
+
+    private void user(UUID id, String role, String status) {
+        when(users.find(id)).thenReturn(Optional.of(new ManagedUser(id, id + "@example.test", role, status, true)));
+    }
+
+    private void grant(UUID userId) {
+        grants.add(new GrantedPermission(UUID.randomUUID(), userId, PURCHASE_ORDER_CREATE, SOURCE_REQUEST, NOW));
+    }
+
     private static final class FakeGrants implements UserPermissionRepository {
 
         private final List<GrantedPermission> rows = new ArrayList<>();
@@ -132,6 +238,11 @@ class CreatePurchaseOrderTest {
         @Override
         public Optional<PurchaseOrder> findById(UUID id) {
             return Optional.ofNullable(rows.get(id));
+        }
+
+        @Override
+        public Optional<PurchaseOrder> lockById(UUID id) {
+            throw new UnsupportedOperationException();
         }
     }
 }

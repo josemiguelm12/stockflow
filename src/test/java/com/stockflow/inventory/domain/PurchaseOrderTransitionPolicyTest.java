@@ -20,6 +20,7 @@ import static com.stockflow.inventory.domain.PurchaseOrderStatus.SUBMITTED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 class PurchaseOrderTransitionPolicyTest {
 
@@ -90,6 +91,22 @@ class PurchaseOrderTransitionPolicyTest {
                 .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
         assertThatThrownBy(() -> PurchaseOrderTransitionPolicy.requireAllowed(CANCELLED, SUBMITTED))
                 .isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+    }
+
+    /** Detector P3-2: RECEIVED es terminal y no vuelve a DRAFT. */
+    @Test
+    void receivedIsTerminalAndCannotReturnToDraft() {
+        // Arrange
+        PurchaseOrderStatus from = RECEIVED;
+
+        // Act
+        Throwable thrown = catchThrowable(() -> PurchaseOrderTransitionPolicy.requireAllowed(from, DRAFT));
+
+        // Assert
+        assertThat(PurchaseOrderTransitionPolicy.isAllowed(from, DRAFT)).isFalse();
+        assertThat(PurchaseOrderTransitionPolicy.isTerminal(from)).isTrue();
+        assertThat(thrown).isInstanceOf(InvalidPurchaseOrderTransitionException.class)
+                .hasMessage("Purchase order transition not allowed: RECEIVED -> DRAFT");
     }
 
     @Test

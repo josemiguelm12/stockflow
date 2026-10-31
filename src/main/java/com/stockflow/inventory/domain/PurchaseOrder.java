@@ -39,6 +39,19 @@ public final class PurchaseOrder {
         status = target;
     }
 
+    /**
+     * Operación de envío ({@code DRAFT -> SUBMITTED}): además de la política exige proveedor. Primero decide la
+     * política (un origen que no sea {@code DRAFT} se rechaza como transición); si falta el proveedor, el estado no
+     * cambia.
+     */
+    public void submit() {
+        PurchaseOrderTransitionPolicy.requireAllowed(status, PurchaseOrderStatus.SUBMITTED);
+        if (supplierId == null) {
+            throw new PurchaseOrderSupplierRequiredException();
+        }
+        transitionTo(PurchaseOrderStatus.SUBMITTED);
+    }
+
     public UUID id() {
         return id;
     }

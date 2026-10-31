@@ -8,7 +8,11 @@ import com.stockflow.identity.application.InvalidCurrentPasswordException;
 import com.stockflow.identity.application.InvalidInputException;
 import com.stockflow.identity.application.InvalidPasswordResetTokenException;
 import com.stockflow.identity.application.UserNotFoundException;
+import com.stockflow.inventory.application.PurchaseOrderActorNotAuthorizedException;
+import com.stockflow.inventory.application.PurchaseOrderNotFoundException;
 import com.stockflow.inventory.application.PurchaseOrderPermissionDeniedException;
+import com.stockflow.inventory.domain.InvalidPurchaseOrderTransitionException;
+import com.stockflow.inventory.domain.PurchaseOrderSupplierRequiredException;
 import com.stockflow.permission.application.PermissionActorNotAuthorizedException;
 import com.stockflow.permission.application.PermissionRequestNotFoundException;
 import com.stockflow.permission.application.PermissionSelfResolutionException;
@@ -105,16 +109,23 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return invalidRequest();
     }
 
-    @ExceptionHandler({PermissionActorNotAuthorizedException.class, PurchaseOrderPermissionDeniedException.class})
+    @ExceptionHandler({PermissionActorNotAuthorizedException.class, PurchaseOrderPermissionDeniedException.class,
+            PurchaseOrderActorNotAuthorizedException.class})
     ProblemDetail forbidden() {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.FORBIDDEN);
         problem.setTitle("Forbidden");
         return problem;
     }
 
-    @ExceptionHandler(PermissionRequestNotFoundException.class)
-    ProblemDetail permissionRequestNotFound() {
+    @ExceptionHandler({PermissionRequestNotFoundException.class, PurchaseOrderNotFoundException.class})
+    ProblemDetail resourceNotFound() {
         return userNotFound();
+    }
+
+    @ExceptionHandler({InvalidPurchaseOrderTransitionException.class, PurchaseOrderSupplierRequiredException.class})
+    ProblemDetail purchaseOrderConflict() {
+        // Genérico: no dice el estado actual, el destino ni si falta el proveedor.
+        return adminConflict();
     }
 
     @ExceptionHandler({InvalidPermissionRequestTransitionException.class, PermissionSelfResolutionException.class})

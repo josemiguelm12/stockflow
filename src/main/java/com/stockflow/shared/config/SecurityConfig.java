@@ -90,6 +90,14 @@ public class SecurityConfig {
                                 "/api/v1/permission-requests/*/reject").hasRole("ADMIN")
                         // Solo Bearer: la concesión persistida decide en el caso de uso, incluso para un ADMIN.
                         .requestMatchers(HttpMethod.POST, "/api/v1/purchase-orders").authenticated()
+                        // Transiciones (P3-F1): enviar y cancelar STANDARD o ADMIN (cancelar fuera de DRAFT lo
+                        // restringe a ADMIN el caso de uso, que ve el estado); aprobar y recibir solo ADMIN.
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/purchase-orders/*/submit",
+                                "/api/v1/purchase-orders/*/cancel").hasAnyRole("STANDARD", "ADMIN")
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/purchase-orders/*/approve",
+                                "/api/v1/purchase-orders/*/receive").hasRole("ADMIN")
                         .anyRequest().denyAll());
         return http.build();
     }
