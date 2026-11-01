@@ -28,7 +28,7 @@ public final class PurchaseOrderTransitionPolicy {
     private static Map<PurchaseOrderStatus, Set<PurchaseOrderStatus>> allowed() {
         Map<PurchaseOrderStatus, Set<PurchaseOrderStatus>> allowed = new EnumMap<>(PurchaseOrderStatus.class);
         allowed.put(DRAFT, EnumSet.of(SUBMITTED, CANCELLED));
-        allowed.put(SUBMITTED, EnumSet.of(APPROVED, CANCELLED));
+        allowed.put(SUBMITTED, EnumSet.of(APPROVED, RECEIVED, CANCELLED));
         allowed.put(APPROVED, EnumSet.of(RECEIVED, CANCELLED));
         allowed.put(RECEIVED, EnumSet.noneOf(PurchaseOrderStatus.class));
         allowed.put(CANCELLED, EnumSet.noneOf(PurchaseOrderStatus.class));
