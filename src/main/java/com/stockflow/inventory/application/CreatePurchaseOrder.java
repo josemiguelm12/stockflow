@@ -37,9 +37,6 @@ public class CreatePurchaseOrder {
     @Transactional
     public UUID create(UUID actorId, UUID supplierId) {
         PurchaseOrderActors.requireActiveUser(users, actorId);
-        if (!permissions.hasPermission(actorId, PURCHASE_ORDER_CREATE)) {
-            throw new PurchaseOrderPermissionDeniedException();
-        }
         PurchaseOrder order = PurchaseOrder.create(UUID.randomUUID(), supplierId, clock.instant());
         orders.save(order);
         return order.id();
