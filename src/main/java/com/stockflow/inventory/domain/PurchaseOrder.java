@@ -46,9 +46,6 @@ public final class PurchaseOrder {
      */
     public void submit() {
         PurchaseOrderTransitionPolicy.requireAllowed(status, PurchaseOrderStatus.SUBMITTED);
-        if (supplierId == null) {
-            throw new PurchaseOrderSupplierRequiredException();
-        }
         transitionTo(PurchaseOrderStatus.SUBMITTED);
     }
 
