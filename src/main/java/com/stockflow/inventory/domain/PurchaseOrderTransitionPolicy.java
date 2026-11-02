@@ -30,7 +30,7 @@ public final class PurchaseOrderTransitionPolicy {
         allowed.put(DRAFT, EnumSet.of(SUBMITTED, CANCELLED));
         allowed.put(SUBMITTED, EnumSet.of(APPROVED, CANCELLED));
         allowed.put(APPROVED, EnumSet.of(RECEIVED, CANCELLED));
-        allowed.put(RECEIVED, EnumSet.noneOf(PurchaseOrderStatus.class));
+        allowed.put(RECEIVED, EnumSet.of(DRAFT));
         allowed.put(CANCELLED, EnumSet.noneOf(PurchaseOrderStatus.class));
         return Collections.unmodifiableMap(allowed);
     }
