@@ -110,7 +110,7 @@ class PermissionPersistenceIT extends AbstractPostgresIT {
     }
 
     @Test
-    void v3IsAppliedAfterTheUntouchedV1AndV2() {
+    void v4IsAppliedAfterTheUntouchedV1ToV3() {
         // Arrange
         String history = "SELECT version FROM flyway_schema_history WHERE success ORDER BY installed_rank";
 
@@ -118,10 +118,13 @@ class PermissionPersistenceIT extends AbstractPostgresIT {
         List<String> versions = jdbc.queryForList(history, String.class);
 
         // Assert
-        assertThat(versions).containsExactly("1", "2", "3");
+        assertThat(versions).containsExactly("1", "2", "3", "4");
         assertThat(jdbc.queryForObject(
                 "SELECT script FROM flyway_schema_history WHERE version = '3'", String.class))
                 .isEqualTo("V3__permission_management.sql");
+        assertThat(jdbc.queryForObject(
+                "SELECT script FROM flyway_schema_history WHERE version = '4'", String.class))
+                .isEqualTo("V4__document_management.sql");
     }
 
     @Test

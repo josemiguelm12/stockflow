@@ -673,6 +673,40 @@ Debe terminar con `BUILD SUCCESS`. Las pruebas del módulo de negocio son:
 
 ## Defectos
 
+## 16. Contenedor (Práctica 4)
+
+Para ejecutar StockFlow localmente solo se requieren Docker y Docker Compose. No instales Java, Maven ni PostgreSQL en el host.
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+La API queda en http://localhost:8080 y su salud se comprueba con http://localhost:8080/api/health. Solo `app` publica un puerto al host; PostgreSQL y Mailpit permanecen en la red privada de Compose. Para detener los servicios use `docker compose down`. Ese comando conserva los volúmenes nombrados `postgres-data` y `documents-data`; por tanto, al hacer posteriormente `docker compose up` se mantienen usuarios, sesiones, órdenes, permisos, documentos, binarios y borradores. `docker compose down -v` elimina esos volúmenes y destruye los datos locales.
+
+Para comprobar persistencia, registre/active un usuario, cargue un documento, ejecute `docker compose down`, luego `docker compose up` y vuelva a consultar el usuario y el documento. No use `-v` para esa comprobación.
+
+El servicio `smtp` usa Mailpit `axllent/mailpit:v1.33.1` solo internamente (SMTP `1025`, API `8025`). El worker se ejecuta periódicamente sin servidor HTTP. Para ver correo sin publicar puertos adicionales:
+
+```bash
+docker compose exec smtp /mailpit readyz
+docker compose exec smtp wget -qO- http://localhost:8025/api/v1/messages
+```
+
+Tome el `ID` de un mensaje de la primera salida y consulte su contenido con `docker compose exec smtp wget -qO- http://localhost:8025/api/v1/message/<ID>`. Los enlaces de activación y recuperación apuntan a `http://localhost:8080`; no existe un endpoint público para revelar tokens.
+
+## 17. API externa Mindee V2 (Práctica 4)
+
+StockFlow usa Mindee V2 para convertir una factura PDF/JPEG/PNG en un borrador financiero revisable. `POST /api/v1/documents/{id}/extract-financial-data` crea o actualiza el borrador del documento; `GET /api/v1/documents/{id}/financial-extraction-draft` lo consulta. La extracción no modifica órdenes de compra ni importes de inventario.
+
+Configure `STOCKFLOW_MINDEE_API_KEY`, `STOCKFLOW_MINDEE_MODEL_ID`, `STOCKFLOW_MINDEE_BASE_URL` y `STOCKFLOW_MINDEE_TIMEOUT`. El modelo debe ser un modelo financiero compatible de Mindee V2. Sin clave o modelo la API general sigue funcionando y la extracción devuelve un error controlado. También son controlados cuota, rate limit, errores del proveedor, resultados malformados y timeout. El proveedor se consulta mediante enqueue, job polling e inference final; los datos almacenados son proveedor, número, fecha, moneda de `locale.currency` e importe cuando estén presentes.
+
+Ejemplo **ilustrativo, no una respuesta real** del recurso StockFlow:
+
+```json
+{"processingStatus":"EXTRACTED","reviewStatus":"PENDING_REVIEW","supplierName":"Example Supplier","invoiceNumber":"INV-42","invoiceDate":"2026-01-10","currency":"USD","totalAmount":12.50}
+```
+
 Defectos de la Práctica 2 (Variante B) sobre la Gestión de Permisos y la prueba existente que detecta cada uno. En la
 versión sana todas estas pruebas pasan; con el defecto plantado, la prueba indicada falla. Se ejecutan con el comando
 único de la [sección 6](#6-pruebas).
