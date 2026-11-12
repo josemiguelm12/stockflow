@@ -18,6 +18,13 @@ import com.stockflow.permission.application.PermissionRequestNotFoundException;
 import com.stockflow.permission.application.PermissionSelfResolutionException;
 import com.stockflow.permission.domain.InvalidPermissionRequestException;
 import com.stockflow.permission.domain.InvalidPermissionRequestTransitionException;
+import com.stockflow.document.application.DocumentAccessDeniedException;
+import com.stockflow.document.application.DocumentActorNotAuthorizedException;
+import com.stockflow.document.application.DocumentContentMissingException;
+import com.stockflow.document.application.DocumentNotFoundException;
+import com.stockflow.document.application.DocumentStorageException;
+import com.stockflow.document.domain.InvalidDocumentException;
+import com.stockflow.document.application.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
@@ -133,6 +140,41 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         // Genérico: no dice el estado actual ni si es auto-resolución.
         return adminConflict();
     }
+
+    @ExceptionHandler({InvalidDocumentException.class})
+    ProblemDetail invalidDocument() { return invalidRequest(); }
+
+    @ExceptionHandler({DocumentActorNotAuthorizedException.class, DocumentAccessDeniedException.class})
+    ProblemDetail documentForbidden() { return forbidden(); }
+
+    @ExceptionHandler(DocumentNotFoundException.class)
+    ProblemDetail documentNotFound() { return userNotFound(); }
+
+    @ExceptionHandler(DocumentContentMissingException.class)
+    ProblemDetail documentContentMissing() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Conflict");
+        problem.setDetail("The requested document content is unavailable.");
+        return problem;
+    }
+
+    @ExceptionHandler(DocumentStorageException.class)
+    ProblemDetail documentStorageFailure() {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
+        problem.setTitle("Internal server error");
+        return problem;
+    }
+
+    @ExceptionHandler({MindeeConfigurationException.class, MindeeProviderException.class})
+    ProblemDetail providerUnavailable() { ProblemDetail p=ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE); p.setTitle("Service unavailable"); return p; }
+    @ExceptionHandler(MindeeTimeoutException.class)
+    ProblemDetail providerTimeout() { ProblemDetail p=ProblemDetail.forStatus(HttpStatus.GATEWAY_TIMEOUT); p.setTitle("Gateway timeout"); return p; }
+    @ExceptionHandler({UnsupportedFinancialDocumentException.class})
+    ProblemDetail unsupportedDocument() { return invalidRequest(); }
+    @ExceptionHandler({FinancialExtractionInProgressException.class})
+    ProblemDetail extractionConflict() { return adminConflict(); }
+    @ExceptionHandler({FinancialExtractionNotFoundException.class})
+    ProblemDetail extractionNotFound() { return userNotFound(); }
 
     /** JSON ilegible, cuerpo ausente o valor no convertible: sin el detalle por defecto, que repite lo recibido. */
     @Override

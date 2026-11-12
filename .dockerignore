@@ -1,0 +1,14 @@
+.git
+.env
+.agent
+.idea
+.vscode
+target
+*.log
+*.tmp
+*.swp
+documents
+data
+docker-compose.override.yml
+README.md
+docs

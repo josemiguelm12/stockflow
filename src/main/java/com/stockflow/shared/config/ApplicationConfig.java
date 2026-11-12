@@ -8,7 +8,7 @@ import java.time.Clock;
 
 @Configuration
 @EnableConfigurationProperties({ActivationProperties.class, PasswordResetProperties.class, OutboxProperties.class,
-        SmtpProperties.class})
+        SmtpProperties.class, DocumentProperties.class, MindeeProperties.class})
 public class ApplicationConfig {
 
     @Bean

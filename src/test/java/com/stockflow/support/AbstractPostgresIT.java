@@ -2,11 +2,14 @@ package com.stockflow.support;
 
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.junit.jupiter.api.BeforeEach;
 
 /** Base de las pruebas de integración: un único PostgreSQL real (Testcontainers) compartido por todas. */
 @SpringBootTest
@@ -34,6 +37,18 @@ public abstract class AbstractPostgresIT {
     public static final String JWT_SECRET = "dGVzdC1qd3Qtc2VjcmV0LWZvci1zdG9ja2Zsb3ctMDE=";
 
     protected static final PostgreSQLContainer POSTGRES = SharedPostgres.CONTAINER;
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    /**
+     * Aisla cada prueba de integración del estado dejado por otra clase, incluido V4.
+     * La conexión procede únicamente del contenedor {@link SharedPostgres} configurado arriba.
+     */
+    @BeforeEach
+    void cleanSharedTestDatabase() {
+        TestDatabaseCleaner.clean(jdbc);
+    }
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {

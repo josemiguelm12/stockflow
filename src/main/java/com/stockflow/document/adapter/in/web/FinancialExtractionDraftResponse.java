@@ -1,0 +1,3 @@
+package com.stockflow.document.adapter.in.web;
+import com.stockflow.document.domain.FinancialExtractionDraft; import java.math.BigDecimal; import java.time.LocalDate; import java.time.Instant;
+record FinancialExtractionDraftResponse(String processingStatus,String reviewStatus,String supplierName,String invoiceNumber,LocalDate invoiceDate,String currency,BigDecimal totalAmount,Instant createdAt,Instant updatedAt){static FinancialExtractionDraftResponse from(FinancialExtractionDraft d){return new FinancialExtractionDraftResponse(d.processingStatus().name(),d.reviewStatus().name(),d.supplierName().orElse(null),d.invoiceNumber().orElse(null),d.invoiceDate().orElse(null),d.currency().orElse(null),d.totalAmount().orElse(null),d.createdAt(),d.updatedAt());}}

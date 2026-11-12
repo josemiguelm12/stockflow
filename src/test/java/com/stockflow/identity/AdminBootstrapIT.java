@@ -5,6 +5,7 @@ import com.stockflow.identity.application.AdminBootstrapException;
 import com.stockflow.identity.application.BootstrapAdmin;
 import com.stockflow.identity.application.UserAdministrationRepository;
 import com.stockflow.support.SharedPostgres;
+import com.stockflow.support.TestDatabaseCleaner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -50,10 +51,7 @@ class AdminBootstrapIT {
     void cleanDatabase() {
         // El primer arranque aplica Flyway; después se limpian los datos para cada caso.
         try (var ignored = start(false, null, null)) {
-            jdbc.update("DELETE FROM outbound_emails");
-            jdbc.update("DELETE FROM one_time_tokens");
-            jdbc.update("DELETE FROM auth_sessions");
-            jdbc.update("DELETE FROM users");
+            TestDatabaseCleaner.clean(jdbc);
         }
     }
 
