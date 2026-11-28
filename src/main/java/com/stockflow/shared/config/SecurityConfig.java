@@ -96,6 +96,9 @@ public class SecurityConfig {
                         .authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/notifications/*/read").authenticated()
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/notifications/preferences").authenticated()
+                        // Reportes (P5): solo Bearer; el alcance (global/propio) lo fija el caso de uso por rol.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reports/permission-requests",
+                                "/api/v1/reports/purchase-order-approval-efficiency").authenticated()
                         // Document policy (owner or ADMIN) is enforced again in application use cases.
                         .requestMatchers("/api/v1/documents/**").authenticated()
                         // Transiciones (P3-F1): enviar y cancelar STANDARD o ADMIN (cancelar fuera de DRAFT lo

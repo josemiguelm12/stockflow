@@ -172,6 +172,8 @@ Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10
 | PATCH | `/api/v1/admin/users/{id}/status` | Bearer ADMIN | `{"accountStatus"}` | `204`; conflicto `409`; inexistente `404` |
 | POST | `/api/v1/admin/users/{id}/force-password-reset` | Bearer ADMIN | Sin cuerpo | `202`; cualquier cuerpo `400`; cuenta no activa `409` |
 | GET | `/api/v1/admin/outbound-emails?state=&page=0&size=20` | Bearer ADMIN | — | `200` página de entregas del outbox (sección 7.1); `state` opcional `PENDING`/`SENT`/`FAILED`, otro valor `400`; STANDARD `403`; anónimo `401` |
+| GET | `/api/v1/reports/permission-requests?desde=&hasta=&granularity=` | Bearer | — | `200` conteo de solicitudes por período y estado (sección 18); rango inválido `400`; anónimo `401` |
+| GET | `/api/v1/reports/purchase-order-approval-efficiency?desde=&hasta=&granularity=` | Bearer | — | `200` eficiencia de aprobación de órdenes (sección 18); rango inválido `400`; anónimo `401` |
 | POST | `/api/v1/permission-requests` | Bearer | `{"permissionCode":"PURCHASE_ORDER_CREATE"}` | `201 {"id","status":"PENDING"}`; código ausente o desconocido `400` |
 | GET | `/api/v1/permission-requests/pending` | Bearer | — | `200` lista (`id`, `requestedBy`, `permissionCode`, `requestedAt`): todas para ADMIN, solo las propias para STANDARD |
 | POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (queda `APPLIED` y se concede el permiso); STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
@@ -776,3 +778,56 @@ está plantada**: en la versión sana todas estas pruebas pasan.
 | P3-2 | La política permite `RECEIVED -> DRAFT` | `PurchaseOrderTransitionPolicyTest.receivedIsTerminalAndCannotReturnToDraft`; `PurchaseOrderTransitionPolicyTest.terminalStatesHaveNoExits`; `PurchaseOrderTransitionPolicyTest.onlyReceivedAndCancelledAreTerminal` | `RECEIVED` es terminal: no tiene destinos y `RECEIVED -> DRAFT` se rechaza. |
 | P3-3 | Enviar no exige `supplierId` | `PurchaseOrderTest.aDraftWithoutSupplierCannotBeSubmittedAndStaysDraft`; `PurchaseOrderTransitionUseCasesTest.submittingADraftWithoutSupplierIsRejectedAndKeepsDraft`; `PurchaseOrderLifecycleHttpIT.submittingWithoutSupplierIs409AndTheRowStaysDraft` | Una orden sin proveedor no pasa de `DRAFT` a `SUBMITTED`: se lanza `PurchaseOrderSupplierRequiredException` (HTTP `409`) y la orden sigue en `DRAFT`. |
 | P3-4 | Crear una orden no consulta Gestión de Permisos | `PermissionHttpIT.anOrderIsForbiddenUntilTheApprovalAppliesTheGrant` | Sin la concesión `PURCHASE_ORDER_CREATE`, STANDARD y ADMIN reciben `403` y no se crea ninguna orden; tras la aprobación de un ADMIN, el STANDARD crea la orden y queda persistida en `DRAFT`. |
+
+## 18. Reportes (Práctica 5)
+
+Dos reportes **agregados** (nunca listados): la agregación (`GROUP BY`, `COUNT`, `AVG`, `MIN`, `MAX`) la ejecuta
+PostgreSQL y la respuesta no contiene ids de solicitudes, órdenes ni usuarios. Requieren Bearer (`401` sin sesión).
+
+| Reporte | Pregunta que responde | Endpoint |
+|---|---|---|
+| Solicitudes de permisos | ¿Cuántas solicitudes hay en cada estado (`PENDING`, `APPROVED`, `APPLIED`, `REJECTED`) en cada período? Filtra por `requested_at`. | `GET /api/v1/reports/permission-requests` |
+| Eficiencia de aprobación | ¿Cuánto tardan las órdenes de compra en pasar de `SUBMITTED` a `APPROVED`? Agrupa por `approved_at`. | `GET /api/v1/reports/purchase-order-approval-efficiency` |
+
+**Parámetros (ambos reportes, todos opcionales):**
+
+- `desde` y `hasta`: UTC, intervalo `[desde, hasta)` (`desde` inclusivo, `hasta` exclusivo). Formato: fecha `2026-03-01`
+  (medianoche UTC) o instante con zona `2026-03-01T10:00:00Z`. Si se omiten ambos: últimos 30 días hasta ahora. Con uno
+  solo, el otro se deriva (`hasta` = ahora, o `desde` = `hasta` − 30 días). Máximo 366 días; `desde = hasta` es un
+  intervalo vacío válido. Formato incorrecto, `desde` posterior a `hasta` o más de 366 días responden `400`.
+- `granularity`: tamaño del período, `DAY` (por defecto), `WEEK` (semana ISO, empieza el lunes) o `MONTH`, siempre en UTC.
+  Otro valor responde `400`.
+
+**Alcance:** un ADMIN obtiene agregados globales (`"scope":"GLOBAL"`). Un STANDARD obtiene solo lo suyo
+(`"scope":"OWN"`): sus solicitudes (`requested_by`) o las órdenes de las que es propietario (`owner_user_id`). El actor
+sale siempre de la sesión: parámetros como `userId` se ignoran. Las órdenes históricas sin propietario no se atribuyen
+a ningún STANDARD (solo aparecen en el alcance global).
+
+**Respuesta de solicitudes:** `{from, to, granularity, scope, groups:[{periodStart, status, count}]}`. Los grupos sin
+filas se omiten; sin datos, `groups` es `[]` (`200`).
+
+**Respuesta de eficiencia:** `{from, to, granularity, scope, unit:"SECONDS", groups:[{periodStart, approvedCount,
+averageSeconds, minSeconds, maxSeconds}]}`. **Unidad: segundos** (`approved_at − submitted_at`); `approvedCount` es la
+cantidad de órdenes aprobadas en el período. Solo cuentan las órdenes con `submitted_at` y `approved_at`: las
+históricas anteriores a la Práctica 5 (sin fechas) quedan excluidas y no se inventan datos.
+
+Ejemplos (PowerShell, con `$token` de un login; ver sección 8):
+
+```powershell
+$h = @{ Authorization = "Bearer $token" }
+# Solicitudes por estado y día, marzo de 2026
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/permission-requests?desde=2026-03-01&hasta=2026-04-01"
+# Eficiencia de aprobación por semana
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/purchase-order-approval-efficiency?desde=2026-03-01&hasta=2026-04-01&granularity=WEEK"
+# Últimos 30 días (sin parámetros)
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/purchase-order-approval-efficiency"
+```
+
+Ejemplo de respuesta de eficiencia: `{"granularity":"DAY","scope":"GLOBAL","unit":"SECONDS","groups":[{"periodStart":"2026-03-01T00:00:00Z","approvedCount":3,"averageSeconds":3200.0,"minSeconds":600.0,"maxSeconds":7200.0}]}`.
+
+**Cómo reproducir los resultados:** crea órdenes con `POST /api/v1/purchase-orders`, envíalas
+(`/submit`) y apruébalas como ADMIN (`/approve`); la API fija `submitted_at` y `approved_at` y la duración sale de esa
+diferencia. Las pruebas automáticas (`ReportsIT`, `ReportRangeTest`) insertan datos con fechas conocidas en
+PostgreSQL (Testcontainers) y comprueban cada conteo, media, mínimo y máximo, los límites exactos del intervalo, el
+aislamiento entre usuarios STANDARD, el alcance global de ADMIN, las órdenes históricas, los rangos inválidos y los
+resultados vacíos.
