@@ -27,11 +27,14 @@ public class CreatePermissionRequest {
     private final UserAdministrationRepository users;
     private final PermissionRequestRepository requests;
     private final Clock clock;
+    private final PermissionEventNotifier notifier;
 
-    CreatePermissionRequest(UserAdministrationRepository users, PermissionRequestRepository requests, Clock clock) {
+    CreatePermissionRequest(UserAdministrationRepository users, PermissionRequestRepository requests, Clock clock,
+                            PermissionEventNotifier notifier) {
         this.users = users;
         this.requests = requests;
         this.clock = clock;
+        this.notifier = notifier;
     }
 
     @Transactional
@@ -46,6 +49,7 @@ public class CreatePermissionRequest {
         PermissionRequest request = PermissionRequest.create(UUID.randomUUID(), actorId, command.permissionCode(),
                 clock.instant());
         requests.save(request);
+        notifier.requestCreated(request);
         return new Result(request.id(), request.status());
     }
 }

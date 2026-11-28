@@ -5,7 +5,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /**
  * Resetea exclusivamente la base PostgreSQL efímera levantada por {@link SharedPostgres}.
  *
- * <p>El orden conserva las claves foráneas de V1 a V4: los hijos de documentos se borran
+ * <p>El orden conserva las claves foráneas de V1 a V5 (notificaciones y preferencias antes de usuarios, órdenes
+ * con propietario antes de usuarios): los hijos de documentos se borran
  * antes de documentos, y todos los dependientes de usuarios antes de usuarios.</p>
  */
 public final class TestDatabaseCleaner {
@@ -16,6 +17,8 @@ public final class TestDatabaseCleaner {
     public static void clean(JdbcTemplate jdbc) {
         jdbc.update("DELETE FROM financial_extraction_drafts");
         jdbc.update("DELETE FROM documents");
+        jdbc.update("DELETE FROM notifications");
+        jdbc.update("DELETE FROM user_notification_preferences");
         jdbc.update("DELETE FROM user_permissions");
         jdbc.update("DELETE FROM permission_requests");
         jdbc.update("DELETE FROM purchase_orders");

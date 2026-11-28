@@ -51,7 +51,7 @@ Debe terminar con `BUILD SUCCESS`.
 ## 3. Levantar la aplicación
 
 Antes de arrancar, define las variables de entorno de la sección 5 en la misma terminal. Sin ellas, la aplicación
-no arranca. Al iniciar, Flyway aplica las migraciones pendientes (V1, V2 y V3).
+no arranca. Al iniciar, Flyway aplica las migraciones pendientes (V1 a V5).
 
 En Windows (PowerShell):
 
@@ -171,6 +171,9 @@ Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10
 | PATCH | `/api/v1/admin/users/{id}/role` | Bearer ADMIN | `{"role"}` | `204`; conflicto `409`; inexistente `404` |
 | PATCH | `/api/v1/admin/users/{id}/status` | Bearer ADMIN | `{"accountStatus"}` | `204`; conflicto `409`; inexistente `404` |
 | POST | `/api/v1/admin/users/{id}/force-password-reset` | Bearer ADMIN | Sin cuerpo | `202`; cualquier cuerpo `400`; cuenta no activa `409` |
+| GET | `/api/v1/admin/outbound-emails?state=&page=0&size=20` | Bearer ADMIN | — | `200` página de entregas del outbox (sección 7.1); `state` opcional `PENDING`/`SENT`/`FAILED`, otro valor `400`; STANDARD `403`; anónimo `401` |
+| GET | `/api/v1/reports/permission-requests?desde=&hasta=&granularity=` | Bearer | — | `200` conteo de solicitudes por período y estado (sección 18); rango inválido `400`; anónimo `401` |
+| GET | `/api/v1/reports/purchase-order-approval-efficiency?desde=&hasta=&granularity=` | Bearer | — | `200` eficiencia de aprobación de órdenes (sección 18); rango inválido `400`; anónimo `401` |
 | POST | `/api/v1/permission-requests` | Bearer | `{"permissionCode":"PURCHASE_ORDER_CREATE"}` | `201 {"id","status":"PENDING"}`; código ausente o desconocido `400` |
 | GET | `/api/v1/permission-requests/pending` | Bearer | — | `200` lista (`id`, `requestedBy`, `permissionCode`, `requestedAt`): todas para ADMIN, solo las propias para STANDARD |
 | POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (queda `APPLIED` y se concede el permiso); STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
@@ -231,12 +234,47 @@ $env:SPRING_MAIN_WEB_APPLICATION_TYPE = "none"
 ```
 
 (en Bash: `STOCKFLOW_WORKER_ENABLED=true SPRING_MAIN_WEB_APPLICATION_TYPE=none ./mvnw spring-boot:run`).
-Si SMTP no responde, el correo sigue `PENDING` y puede reintentarse volviendo a ejecutar el worker; si dos workers
-corren a la vez no se reclama el mismo correo. No se garantiza "exactamente una vez": si el proceso cae justo
-después de que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo puede reenviarse.
+Cada ejecución del worker procesa como máximo 50 envíos y termina. Si dos workers corren a la vez no se reclama el
+mismo correo (`FOR UPDATE SKIP LOCKED`). No se garantiza "exactamente una vez": si el proceso cae justo después de
+que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo puede reenviarse.
 
 Verificación manual con un SMTP real: registra un correo propio, ejecuta el worker, abre el enlace recibido y pulsa
 **Activar cuenta**.
+
+### 7.1 Reintentos, estado `FAILED` y consulta de la cola
+
+Un correo tiene **tres intentos totales**: el inicial, un reintento a partir de 1 minuto después del primer fallo y
+un último reintento a partir de 5 minutos después del segundo fallo. El worker solo reclama los `PENDING` cuyo
+`next_attempt_at` ya venció, así que ejecutarlo antes no reenvía nada. Tras el tercer fallo el correo queda `FAILED`
+(terminal): no vuelve a reclamarse ni a enviarse y se descarta su payload cifrado. Un `SENT` tampoco se reenvía.
+Las operaciones que originan correos (registro, recuperación, notificaciones funcionales) solo escriben en el
+outbox, por lo que funcionan con SMTP caído; la entrega ocurre únicamente en el worker.
+
+Cada fila registra `state`, `attempt_count`, `last_attempt_at`, `next_attempt_at`, `sent_at`, `failed_at` y
+`last_error`. `last_error` está sanitizado: solo el tipo de fallo (por ejemplo `SMTP delivery failed (MailConnectException)`),
+nunca el mensaje de la excepción, el destinatario, el enlace ni credenciales.
+
+**Consulta administrativa** (`GET /api/v1/admin/outbound-emails`, solo ADMIN): devuelve
+`{items, page, size, totalElements, totalPages}`, los más recientes primero, con `id`, `recipient`, `templateKey`,
+`state`, `attemptCount`, `enqueuedAt`, `lastAttemptAt`, `nextAttemptAt`, `sentAt`, `failedAt` y `lastError`. Filtros:
+`state` (`PENDING`, `SENT`, `FAILED`), `page` (≥ 0) y `size` (1 a 100, por defecto 20). Nunca incluye el payload,
+tokens ni credenciales SMTP.
+
+**Cómo provocar un fallo SMTP y ver los reintentos** (PowerShell, solo entorno local):
+
+1. Registra un usuario con `POST /api/v1/auth/register` (la API responde `201` aunque SMTP no exista).
+2. Ejecuta el worker con un servidor inexistente: `$env:STOCKFLOW_SMTP_HOST = "127.0.0.1"`,
+   `$env:STOCKFLOW_SMTP_PORT = "1"`, `$env:STOCKFLOW_SMTP_FROM = "noreply@stockflow.local"` y, además,
+   `STOCKFLOW_WORKER_ENABLED=true` y `SPRING_MAIN_WEB_APPLICATION_TYPE=none` como arriba.
+3. Consulta `GET /api/v1/admin/outbound-emails?state=PENDING` con un Bearer de ADMIN: verás `attemptCount: 1`,
+   `nextAttemptAt` a +1 minuto y `lastError` sanitizado.
+4. Vuelve a ejecutar el worker pasado 1 minuto (`attemptCount: 2`, `nextAttemptAt` a +5 minutos) y de nuevo pasados
+   5 minutos más: el correo pasa a `FAILED` (`attemptCount: 3`, `failedAt` informado). Con `?state=FAILED` aparece ahí
+   y ninguna ejecución posterior lo reenvía.
+5. Para ver la recuperación, apunta `STOCKFLOW_SMTP_HOST`/`PORT` a un SMTP válido (por ejemplo Mailpit, sección 16)
+   antes de que se agoten los intentos: el siguiente intento elegible lo deja `SENT`.
+
+Las pruebas automáticas (`OutboxRetryIT`) verifican esos plazos con un reloj controlable, sin esperas reales.
 
 ## 8. Sesiones, bloqueo y rate limiting
 
@@ -740,3 +778,244 @@ está plantada**: en la versión sana todas estas pruebas pasan.
 | P3-2 | La política permite `RECEIVED -> DRAFT` | `PurchaseOrderTransitionPolicyTest.receivedIsTerminalAndCannotReturnToDraft`; `PurchaseOrderTransitionPolicyTest.terminalStatesHaveNoExits`; `PurchaseOrderTransitionPolicyTest.onlyReceivedAndCancelledAreTerminal` | `RECEIVED` es terminal: no tiene destinos y `RECEIVED -> DRAFT` se rechaza. |
 | P3-3 | Enviar no exige `supplierId` | `PurchaseOrderTest.aDraftWithoutSupplierCannotBeSubmittedAndStaysDraft`; `PurchaseOrderTransitionUseCasesTest.submittingADraftWithoutSupplierIsRejectedAndKeepsDraft`; `PurchaseOrderLifecycleHttpIT.submittingWithoutSupplierIs409AndTheRowStaysDraft` | Una orden sin proveedor no pasa de `DRAFT` a `SUBMITTED`: se lanza `PurchaseOrderSupplierRequiredException` (HTTP `409`) y la orden sigue en `DRAFT`. |
 | P3-4 | Crear una orden no consulta Gestión de Permisos | `PermissionHttpIT.anOrderIsForbiddenUntilTheApprovalAppliesTheGrant` | Sin la concesión `PURCHASE_ORDER_CREATE`, STANDARD y ADMIN reciben `403` y no se crea ninguna orden; tras la aprobación de un ADMIN, el STANDARD crea la orden y queda persistida en `DRAFT`. |
+
+## 18. Reportes (Práctica 5)
+
+Dos reportes **agregados** (nunca listados): la agregación (`GROUP BY`, `COUNT`, `AVG`, `MIN`, `MAX`) la ejecuta
+PostgreSQL y la respuesta no contiene ids de solicitudes, órdenes ni usuarios. Requieren Bearer (`401` sin sesión).
+
+| Reporte | Pregunta que responde | Endpoint |
+|---|---|---|
+| Solicitudes de permisos | ¿Cuántas solicitudes hay en cada estado (`PENDING`, `APPROVED`, `APPLIED`, `REJECTED`) en cada período? Filtra por `requested_at`. | `GET /api/v1/reports/permission-requests` |
+| Eficiencia de aprobación | ¿Cuánto tardan las órdenes de compra en pasar de `SUBMITTED` a `APPROVED`? Agrupa por `approved_at`. | `GET /api/v1/reports/purchase-order-approval-efficiency` |
+
+**Parámetros (ambos reportes, todos opcionales):**
+
+- `desde` y `hasta`: UTC, intervalo `[desde, hasta)` (`desde` inclusivo, `hasta` exclusivo). Formato: fecha `2026-03-01`
+  (medianoche UTC) o instante con zona `2026-03-01T10:00:00Z`. Si se omiten ambos: últimos 30 días hasta ahora. Con uno
+  solo, el otro se deriva (`hasta` = ahora, o `desde` = `hasta` − 30 días). Máximo 366 días; `desde = hasta` es un
+  intervalo vacío válido. Formato incorrecto, `desde` posterior a `hasta` o más de 366 días responden `400`.
+- `granularity`: tamaño del período, `DAY` (por defecto), `WEEK` (semana ISO, empieza el lunes) o `MONTH`, siempre en UTC.
+  Otro valor responde `400`.
+
+**Alcance:** un ADMIN obtiene agregados globales (`"scope":"GLOBAL"`). Un STANDARD obtiene solo lo suyo
+(`"scope":"OWN"`): sus solicitudes (`requested_by`) o las órdenes de las que es propietario (`owner_user_id`). El actor
+sale siempre de la sesión: parámetros como `userId` se ignoran. Las órdenes históricas sin propietario no se atribuyen
+a ningún STANDARD (solo aparecen en el alcance global).
+
+**Respuesta de solicitudes:** `{from, to, granularity, scope, groups:[{periodStart, status, count}]}`. Los grupos sin
+filas se omiten; sin datos, `groups` es `[]` (`200`).
+
+**Respuesta de eficiencia:** `{from, to, granularity, scope, unit:"SECONDS", groups:[{periodStart, approvedCount,
+averageSeconds, minSeconds, maxSeconds}]}`. **Unidad: segundos** (`approved_at − submitted_at`); `approvedCount` es la
+cantidad de órdenes aprobadas en el período. Solo cuentan las órdenes con `submitted_at` y `approved_at`: las
+históricas anteriores a la Práctica 5 (sin fechas) quedan excluidas y no se inventan datos.
+
+Ejemplos (PowerShell, con `$token` de un login; ver sección 8):
+
+```powershell
+$h = @{ Authorization = "Bearer $token" }
+# Solicitudes por estado y día, marzo de 2026
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/permission-requests?desde=2026-03-01&hasta=2026-04-01"
+# Eficiencia de aprobación por semana
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/purchase-order-approval-efficiency?desde=2026-03-01&hasta=2026-04-01&granularity=WEEK"
+# Últimos 30 días (sin parámetros)
+Invoke-RestMethod -Headers $h "http://localhost:8080/api/v1/reports/purchase-order-approval-efficiency"
+```
+
+Ejemplo de respuesta de eficiencia: `{"granularity":"DAY","scope":"GLOBAL","unit":"SECONDS","groups":[{"periodStart":"2026-03-01T00:00:00Z","approvedCount":3,"averageSeconds":3200.0,"minSeconds":600.0,"maxSeconds":7200.0}]}`.
+
+**Cómo reproducir los resultados:** crea órdenes con `POST /api/v1/purchase-orders`, envíalas
+(`/submit`) y apruébalas como ADMIN (`/approve`); la API fija `submitted_at` y `approved_at` y la duración sale de esa
+diferencia. Las pruebas automáticas (`ReportsIT`, `ReportRangeTest`) insertan datos con fechas conocidas en
+PostgreSQL (Testcontainers) y comprueban cada conteo, media, mínimo y máximo, los límites exactos del intervalo, el
+aislamiento entre usuarios STANDARD, el alcance global de ADMIN, las órdenes históricas, los rangos inválidos y los
+resultados vacíos.
+
+## 19. Guía de entrega de la Práctica 5 (paso a paso)
+
+Recorrido reproducible, de un clon limpio a notificaciones, cola de correo y reportes. Todos los comandos son de
+Windows PowerShell, se ejecutan en la raíz del repositorio y usan solo rutas, servicios y scripts que existen. Los
+valores entre `<...>` son suyos; los del `.env.example` son públicos y solo para desarrollo local.
+
+### 19.1 Iniciar el proyecto desde un clon limpio
+
+Solo se requieren Docker y Docker Compose (no Java, Maven ni PostgreSQL en el host):
+
+```powershell
+git clone https://github.com/josemiguelm12/stockflow.git
+cd stockflow
+Copy-Item .env.example .env        # el .env queda fuera de Git; no lo suba
+docker compose up --build -d
+docker compose ps                  # deben figurar db, smtp, app y outbox-worker
+Invoke-RestMethod http://localhost:8080/api/health   # {"status":"UP","application":"StockFlow"}
+```
+
+Los cuatro servicios son `db` (PostgreSQL 16), `smtp` (Mailpit, solo en la red de Compose), `app` (API, sin worker) y
+`outbox-worker` (proceso independiente que envía el correo cada `STOCKFLOW_WORKER_INTERVAL_SECONDS`, 15 por defecto).
+Si el puerto 8080 está ocupado, cambie `STOCKFLOW_APP_PORT` en `.env` y use ese puerto en los ejemplos.
+
+### 19.2 Primer ADMIN, usuarios y tokens
+
+El primer ADMIN se crea con el proceso de bootstrap de la [sección 10](#crear-el-primer-admin-bootstrap), que en Docker
+se ejecuta como un contenedor de un solo uso (no abre servidor web):
+
+```powershell
+docker compose run --rm -e STOCKFLOW_ADMIN_BOOTSTRAP_ENABLED=true -e SPRING_MAIN_WEB_APPLICATION_TYPE=none `
+  -e STOCKFLOW_ADMIN_BOOTSTRAP_EMAIL=<admin-email> -e STOCKFLOW_ADMIN_BOOTSTRAP_PASSWORD=<admin-password> app
+```
+
+El log termina con `Admin bootstrap finished: created`. Funciones de apoyo (pegue este bloque una vez por sesión de
+PowerShell; ajuste `$api` si cambió el puerto):
+
+```powershell
+$api = "http://localhost:8080/api/v1"
+function Api($method, $path, $token, $body) {
+  $h = @{}
+  if ($token) { $h.Authorization = "Bearer $token" }
+  if ($body) { Invoke-RestMethod -Method $method "$api$path" -Headers $h -ContentType "application/json" -Body $body }
+  else { Invoke-RestMethod -Method $method "$api$path" -Headers $h }
+}
+function Status($method, $path, $token, $body) {   # código HTTP; sirve para comprobar rechazos esperados
+  try { Api $method $path $token $body | Out-Null; return 200 } catch { return [int]$_.Exception.Response.StatusCode }
+}
+function Login($email, $password) {
+  (Api Post "/auth/login" $null (@{ email = $email; password = $password } | ConvertTo-Json)).accessToken
+}
+function MailToken($to) {                           # token del último correo de Mailpit para ese destinatario
+  $list = (docker compose exec -T smtp wget -qO- http://localhost:8025/api/v1/messages) -join "`n" | ConvertFrom-Json
+  $msg = $list.messages | Where-Object { $_.To[0].Address -eq $to } | Select-Object -First 1
+  $mail = (docker compose exec -T smtp wget -qO- "http://localhost:8025/api/v1/message/$($msg.ID)") -join "`n" | ConvertFrom-Json
+  [regex]::Match($mail.Text, 'token=(\S+)').Groups[1].Value
+}
+```
+
+Registre y active un usuario STANDARD. El correo de activación lo envía el worker (espere unos 15–20 s):
+
+```powershell
+Api Post "/auth/register" $null '{"email":"<standard-email>","password":"<standard-password>"}'
+Start-Sleep 20
+Api Post "/auth/activate" $null (@{ token = (MailToken "<standard-email>") } | ConvertTo-Json)   # 204
+$admin = Login "<admin-email>" "<admin-password>"
+$std   = Login "<standard-email>" "<standard-password>"
+```
+
+Cada token dura 15 minutos (vuelva a hacer `Login` si una petición responde `401`) y el login está limitado a
+10 intentos por minuto. `Api Post "/auth/logout" $std` cierra la sesión (`204`). Un STANDARD recibe `403` en
+`/api/v1/admin/**` (por ejemplo `Status Get "/admin/users" $std` → `403`). La recuperación de contraseña
+(`/auth/password/forgot` y `/auth/password/reset`, [sección 9](#9-recuperación-y-cambio-de-contraseña)) usa el mismo
+`MailToken`.
+
+### 19.3 Provocar los tres eventos de notificación
+
+| Evento | Quién lo provoca | Quién recibe la notificación |
+|---|---|---|
+| Solicitud de permiso creada | STANDARD: `POST /permission-requests` | Todos los ADMIN activos |
+| Solicitud de permiso aprobada o rechazada | ADMIN: `POST /permission-requests/{id}/approve` o `/reject` (con `reason`) | El solicitante (aunque su cuenta no esté activa) |
+| Orden de compra aprobada | ADMIN: `POST /purchase-orders/{id}/approve` | El propietario de la orden (quien la creó) |
+
+```powershell
+# 1) Solicitud creada: el STANDARD pide el permiso; los ADMIN reciben un aviso.
+$req = (Api Post "/permission-requests" $std '{"permissionCode":"PURCHASE_ORDER_CREATE"}').id
+
+# 2) Solicitud resuelta: un ADMIN la aprueba (204) y el STANDARD recibe el aviso.
+#    Para el rechazo use otra solicitud:  Api Post "/permission-requests/$id/reject" $admin '{"reason":"<motivo>"}'
+Api Post "/permission-requests/$req/approve" $admin
+
+# 3) Orden aprobada: con el permiso concedido el STANDARD crea y envía la orden y un ADMIN la aprueba.
+$order = (Api Post "/purchase-orders" $std ('{"supplierId":"' + [guid]::NewGuid() + '"}')).id
+Api Post "/purchase-orders/$order/submit" $std
+Api Post "/purchase-orders/$order/approve" $admin
+```
+
+Cada evento crea la notificación interna y, salvo que el destinatario lo haya desactivado, un correo funcional en la
+cola; ambos se escriben en la misma transacción del evento. Una orden histórica sin propietario no genera aviso.
+
+### 19.4 Consultar, marcar como leídas y desactivar el correo funcional
+
+Solo se ven las notificaciones propias (el usuario sale siempre de la sesión):
+
+```powershell
+$page = Api Get "/notifications?read=false&page=0&size=20" $std     # items, page, size, totalElements, totalPages
+$page.items | Select-Object id, type, title, read
+Api Post "/notifications/$($page.items[0].id)/read" $std            # 200; repetirlo conserva el readAt original
+Api Get "/notifications/preferences" $std                           # {"functionalEmailEnabled":true}
+Api Patch "/notifications/preferences" $std '{"functionalEmailEnabled":false}'
+```
+
+Con el correo funcional desactivado se siguen creando las notificaciones internas, pero no se encolan correos
+funcionales. La preferencia no afecta a la activación ni a la recuperación de contraseña, que siempre se envían.
+Una notificación ajena responde `404`.
+
+### 19.5 Worker independiente
+
+`app` arranca con `STOCKFLOW_WORKER_ENABLED=false`: la API nunca habla con SMTP, solo escribe en el outbox cifrado.
+El worker es el servicio `outbox-worker` (sin servidor HTTP; cada ejecución procesa como máximo 50 correos y termina).
+Para ver que es independiente, deténgalo, provoque un evento y compruebe que el correo queda pendiente:
+
+```powershell
+docker compose stop outbox-worker
+# ... provoque un evento (19.3) y consulte la cola (19.7): state PENDING, attemptCount 0
+docker compose run --rm --entrypoint java outbox-worker -jar /opt/stockflow/app.jar   # una ejecución manual
+docker compose start outbox-worker                                                    # o reanude el bucle normal
+docker compose logs --tail 20 outbox-worker                                           # "Outbox worker finished: sent=..., failed=..."
+```
+
+Los correos entregados se ven en Mailpit (`docker compose exec smtp wget -qO- http://localhost:8025/api/v1/messages`).
+
+### 19.6 Provocar un fallo SMTP y ver los reintentos
+
+Un correo tiene **tres intentos totales**: el inicial, un reintento a partir de 1 minuto después del primer fallo y un
+último a partir de 5 minutos después del segundo. Tras el tercer fallo queda en `FAILED` (terminal, no se reenvía).
+
+```powershell
+docker compose stop smtp                       # con el worker en marcha; si lo arranca después, Compose reinicia smtp
+# ... provoque un evento (19.3): la API responde con normalidad (no depende de SMTP)
+Api Get "/admin/outbound-emails?state=PENDING" $admin   # attemptCount 1, nextAttemptAt = +1 min, lastError sanitizado
+# Espere ~1 min: attemptCount 2, nextAttemptAt = +5 min. Espere ~5 min más: state FAILED, attemptCount 3, failedAt.
+Api Get "/admin/outbound-emails?state=FAILED" $admin
+docker compose start smtp                      # restablece SMTP; un FAILED no se reenvía, un PENDING sí al vencer su plazo
+```
+
+Los plazos son mínimos: el worker comprueba cada 15 s, así que el intento real ocurre en la siguiente pasada. Las
+pruebas automáticas (`OutboxRetryIT`) verifican los plazos exactos con un reloj controlable.
+
+### 19.7 Consultar la cola como ADMIN
+
+```powershell
+Api Get "/admin/outbound-emails?page=0&size=20" $admin            # todos, los más recientes primero
+Api Get "/admin/outbound-emails?state=FAILED" $admin              # PENDING, SENT o FAILED
+(Api Get "/admin/outbound-emails" $admin).items | Select-Object templateKey, state, attemptCount, nextAttemptAt, lastError
+Status Get "/admin/outbound-emails" $std                          # 403 para STANDARD; 401 sin token
+```
+
+Cada fila muestra `state`, `attemptCount`, `enqueuedAt`, `lastAttemptAt`, `nextAttemptAt`, `sentAt`, `failedAt` y
+`lastError` (solo el tipo de fallo). Nunca incluye el payload, tokens ni credenciales.
+
+### 19.8 Reportes con dos rangos de fechas
+
+Detalle de parámetros y respuestas en la [sección 18](#18-reportes-práctica-5). Con los datos del recorrido anterior:
+
+```powershell
+$hoy = (Get-Date).ToUniversalTime()
+$d = { param($n) $hoy.AddDays($n).ToString("yyyy-MM-dd") }
+# Rango A: de ayer a hoy (excluye el día de hoy) y rango B: de hoy a mañana (incluye hoy). Resultados distintos.
+Api Get "/reports/permission-requests?desde=$(& $d -1)&hasta=$(& $d 0)" $admin
+Api Get "/reports/permission-requests?desde=$(& $d 0)&hasta=$(& $d 1)" $admin
+Api Get "/reports/purchase-order-approval-efficiency?desde=$(& $d 0)&hasta=$(& $d 1)" $admin   # segundos
+Api Get "/reports/purchase-order-approval-efficiency?desde=$(& $d 0)&hasta=$(& $d 1)" $std     # solo sus órdenes
+Status Get "/reports/permission-requests?desde=2026-03-02&hasta=2026-03-01" $admin            # 400 rango invertido
+```
+
+El ADMIN ve agregados globales y el STANDARD solo los suyos; sin token, `401`.
+
+### 19.9 Limitaciones conocidas
+
+- **Mindee (Práctica 4):** la extracción financiera depende de una clave y un modelo propios de Mindee V2
+  (`STOCKFLOW_MINDEE_API_KEY` y `STOCKFLOW_MINDEE_MODEL_ID`, vacíos en `.env.example`). Sin ellos, la API arranca y la
+  extracción responde con un error controlado. Su cobertura automática usa un proveedor simulado; el resultado frente
+  al servicio real depende de las credenciales del evaluador y no se garantiza aquí. La Práctica 5 no la modifica.
+- **SMTP "exactamente una vez":** si el worker cae después de que SMTP acepta el mensaje y antes de marcar `SENT`, ese
+  correo puede reenviarse.
+- **Datos históricos:** las órdenes anteriores a la Práctica 5 no tienen propietario ni fechas de envío/aprobación; no
+  generan avisos y quedan fuera del reporte de eficiencia.

@@ -77,7 +77,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout", "/api/v1/auth/password/change")
                         .authenticated()
                         // Administración: solo rol ADMIN (el rol se lee de la base en cada petición, no del JWT).
-                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/users").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/users", "/api/v1/admin/outbound-emails")
+                        .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/admin/users/*/role", "/api/v1/admin/users/*/status")
                         .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/admin/users/*/force-password-reset").hasRole("ADMIN")
@@ -90,6 +91,14 @@ public class SecurityConfig {
                                 "/api/v1/permission-requests/*/reject").hasRole("ADMIN")
                         // Solo Bearer: la concesión persistida decide en el caso de uso, incluso para un ADMIN.
                         .requestMatchers(HttpMethod.POST, "/api/v1/purchase-orders").authenticated()
+                        // Notificaciones internas (P5): solo Bearer; el alcance es siempre el usuario de la sesión.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/notifications", "/api/v1/notifications/preferences")
+                        .authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/notifications/*/read").authenticated()
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/notifications/preferences").authenticated()
+                        // Reportes (P5): solo Bearer; el alcance (global/propio) lo fija el caso de uso por rol.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reports/permission-requests",
+                                "/api/v1/reports/purchase-order-approval-efficiency").authenticated()
                         // Document policy (owner or ADMIN) is enforced again in application use cases.
                         .requestMatchers("/api/v1/documents/**").authenticated()
                         // Transiciones (P3-F1): enviar y cancelar STANDARD o ADMIN (cancelar fuera de DRAFT lo
