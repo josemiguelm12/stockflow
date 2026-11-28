@@ -294,6 +294,8 @@ class RegistrationActivationIT extends AbstractPostgresIT {
                 .isEqualTo(2);
 
         smtp.setFailing(false);
+        assertThat(worker.dispatchPending(10).sent()).as("backoff: not eligible before 1 minute").isZero();
+        clock.advance(Duration.ofMinutes(1));
         assertThat(worker.dispatchPending(10).sent()).isEqualTo(2);
     }
 

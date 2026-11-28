@@ -630,6 +630,7 @@ class UserAdministrationIT extends AbstractPostgresIT {
         String token = resetTokens("user@example.test").get(0);
 
         smtp.setFailing(false);
+        clock.advance(Duration.ofMinutes(1));
         assertThat(worker.dispatchPending(10).sent()).isEqualTo(1);
         assertThat(smtp.sent().get(0).recipient()).isEqualTo("user@example.test");
         assertThat(smtp.sent().get(0).body()).contains("http://localhost:8080/reset-password#token=" + token);

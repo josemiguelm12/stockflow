@@ -563,6 +563,7 @@ class NotificationFlowIT extends AbstractPostgresIT {
         assertThat(count("SELECT count(*) FROM outbound_emails WHERE state = 'PENDING'")).isEqualTo(pending);
 
         sender.setFailing(false);
+        clock.advance(Duration.ofMinutes(1));
         OutboxDispatcher.Result delivered = dispatcher.dispatchPending(50);
 
         assertThat(delivered.sent()).isEqualTo(3);

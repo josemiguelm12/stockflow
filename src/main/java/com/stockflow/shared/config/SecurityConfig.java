@@ -77,7 +77,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout", "/api/v1/auth/password/change")
                         .authenticated()
                         // Administración: solo rol ADMIN (el rol se lee de la base en cada petición, no del JWT).
-                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/users").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/users", "/api/v1/admin/outbound-emails")
+                        .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/admin/users/*/role", "/api/v1/admin/users/*/status")
                         .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/admin/users/*/force-password-reset").hasRole("ADMIN")

@@ -171,6 +171,7 @@ Resumen de todas las rutas. El detalle de cada una está en las secciones 7 a 10
 | PATCH | `/api/v1/admin/users/{id}/role` | Bearer ADMIN | `{"role"}` | `204`; conflicto `409`; inexistente `404` |
 | PATCH | `/api/v1/admin/users/{id}/status` | Bearer ADMIN | `{"accountStatus"}` | `204`; conflicto `409`; inexistente `404` |
 | POST | `/api/v1/admin/users/{id}/force-password-reset` | Bearer ADMIN | Sin cuerpo | `202`; cualquier cuerpo `400`; cuenta no activa `409` |
+| GET | `/api/v1/admin/outbound-emails?state=&page=0&size=20` | Bearer ADMIN | — | `200` página de entregas del outbox (sección 7.1); `state` opcional `PENDING`/`SENT`/`FAILED`, otro valor `400`; STANDARD `403`; anónimo `401` |
 | POST | `/api/v1/permission-requests` | Bearer | `{"permissionCode":"PURCHASE_ORDER_CREATE"}` | `201 {"id","status":"PENDING"}`; código ausente o desconocido `400` |
 | GET | `/api/v1/permission-requests/pending` | Bearer | — | `200` lista (`id`, `requestedBy`, `permissionCode`, `requestedAt`): todas para ADMIN, solo las propias para STANDARD |
 | POST | `/api/v1/permission-requests/{id}/approve` | Bearer ADMIN | Sin cuerpo | `204` (queda `APPLIED` y se concede el permiso); STANDARD `403`; inexistente `404`; ya resuelta o propia `409` |
@@ -231,12 +232,47 @@ $env:SPRING_MAIN_WEB_APPLICATION_TYPE = "none"
 ```
 
 (en Bash: `STOCKFLOW_WORKER_ENABLED=true SPRING_MAIN_WEB_APPLICATION_TYPE=none ./mvnw spring-boot:run`).
-Si SMTP no responde, el correo sigue `PENDING` y puede reintentarse volviendo a ejecutar el worker; si dos workers
-corren a la vez no se reclama el mismo correo. No se garantiza "exactamente una vez": si el proceso cae justo
-después de que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo puede reenviarse.
+Cada ejecución del worker procesa como máximo 50 envíos y termina. Si dos workers corren a la vez no se reclama el
+mismo correo (`FOR UPDATE SKIP LOCKED`). No se garantiza "exactamente una vez": si el proceso cae justo después de
+que SMTP acepta el mensaje y antes de marcar `SENT`, ese correo puede reenviarse.
 
 Verificación manual con un SMTP real: registra un correo propio, ejecuta el worker, abre el enlace recibido y pulsa
 **Activar cuenta**.
+
+### 7.1 Reintentos, estado `FAILED` y consulta de la cola
+
+Un correo tiene **tres intentos totales**: el inicial, un reintento a partir de 1 minuto después del primer fallo y
+un último reintento a partir de 5 minutos después del segundo fallo. El worker solo reclama los `PENDING` cuyo
+`next_attempt_at` ya venció, así que ejecutarlo antes no reenvía nada. Tras el tercer fallo el correo queda `FAILED`
+(terminal): no vuelve a reclamarse ni a enviarse y se descarta su payload cifrado. Un `SENT` tampoco se reenvía.
+Las operaciones que originan correos (registro, recuperación, notificaciones funcionales) solo escriben en el
+outbox, por lo que funcionan con SMTP caído; la entrega ocurre únicamente en el worker.
+
+Cada fila registra `state`, `attempt_count`, `last_attempt_at`, `next_attempt_at`, `sent_at`, `failed_at` y
+`last_error`. `last_error` está sanitizado: solo el tipo de fallo (por ejemplo `SMTP delivery failed (MailConnectException)`),
+nunca el mensaje de la excepción, el destinatario, el enlace ni credenciales.
+
+**Consulta administrativa** (`GET /api/v1/admin/outbound-emails`, solo ADMIN): devuelve
+`{items, page, size, totalElements, totalPages}`, los más recientes primero, con `id`, `recipient`, `templateKey`,
+`state`, `attemptCount`, `enqueuedAt`, `lastAttemptAt`, `nextAttemptAt`, `sentAt`, `failedAt` y `lastError`. Filtros:
+`state` (`PENDING`, `SENT`, `FAILED`), `page` (≥ 0) y `size` (1 a 100, por defecto 20). Nunca incluye el payload,
+tokens ni credenciales SMTP.
+
+**Cómo provocar un fallo SMTP y ver los reintentos** (PowerShell, solo entorno local):
+
+1. Registra un usuario con `POST /api/v1/auth/register` (la API responde `201` aunque SMTP no exista).
+2. Ejecuta el worker con un servidor inexistente: `$env:STOCKFLOW_SMTP_HOST = "127.0.0.1"`,
+   `$env:STOCKFLOW_SMTP_PORT = "1"`, `$env:STOCKFLOW_SMTP_FROM = "noreply@stockflow.local"` y, además,
+   `STOCKFLOW_WORKER_ENABLED=true` y `SPRING_MAIN_WEB_APPLICATION_TYPE=none` como arriba.
+3. Consulta `GET /api/v1/admin/outbound-emails?state=PENDING` con un Bearer de ADMIN: verás `attemptCount: 1`,
+   `nextAttemptAt` a +1 minuto y `lastError` sanitizado.
+4. Vuelve a ejecutar el worker pasado 1 minuto (`attemptCount: 2`, `nextAttemptAt` a +5 minutos) y de nuevo pasados
+   5 minutos más: el correo pasa a `FAILED` (`attemptCount: 3`, `failedAt` informado). Con `?state=FAILED` aparece ahí
+   y ninguna ejecución posterior lo reenvía.
+5. Para ver la recuperación, apunta `STOCKFLOW_SMTP_HOST`/`PORT` a un SMTP válido (por ejemplo Mailpit, sección 16)
+   antes de que se agoten los intentos: el siguiente intento elegible lo deja `SENT`.
+
+Las pruebas automáticas (`OutboxRetryIT`) verifican esos plazos con un reloj controlable, sin esperas reales.
 
 ## 8. Sesiones, bloqueo y rate limiting
 
