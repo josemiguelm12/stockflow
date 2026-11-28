@@ -18,11 +18,14 @@ public class RejectPermissionRequest {
     private final UserAdministrationRepository users;
     private final PermissionRequestRepository requests;
     private final Clock clock;
+    private final PermissionEventNotifier notifier;
 
-    RejectPermissionRequest(UserAdministrationRepository users, PermissionRequestRepository requests, Clock clock) {
+    RejectPermissionRequest(UserAdministrationRepository users, PermissionRequestRepository requests, Clock clock,
+                            PermissionEventNotifier notifier) {
         this.users = users;
         this.requests = requests;
         this.clock = clock;
+        this.notifier = notifier;
     }
 
     @Transactional
@@ -39,5 +42,6 @@ public class RejectPermissionRequest {
         }
         request.reject(actorId, clock.instant(), reason);
         requests.save(request);
+        notifier.requestRejected(request, reason);
     }
 }

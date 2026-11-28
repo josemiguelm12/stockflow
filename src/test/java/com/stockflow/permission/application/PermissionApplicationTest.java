@@ -28,6 +28,7 @@ import static com.stockflow.permission.domain.PermissionRequestStatus.PENDING;
 import static com.stockflow.permission.domain.PermissionRequestStatus.REJECTED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.Mockito.mock;
 
 /**
  * Casos de uso de Gestión de Permisos con fakes en memoria y reloj fijo. Los fakes guardan copias: una mutación del
@@ -54,10 +55,13 @@ class PermissionApplicationTest {
     private final FakeGrants grants = new FakeGrants();
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
-    private final CreatePermissionRequest create = new CreatePermissionRequest(users, requests, clock);
+    // Los avisos se prueban en PermissionNotificationTriggersTest; aquí solo se comprueba el flujo de negocio.
+    private final PermissionEventNotifier notifier = mock(PermissionEventNotifier.class);
+
+    private final CreatePermissionRequest create = new CreatePermissionRequest(users, requests, clock, notifier);
     private final ListPendingPermissionRequests list = new ListPendingPermissionRequests(users, requests);
-    private final ApprovePermissionRequest approve = new ApprovePermissionRequest(users, requests, grants, clock);
-    private final RejectPermissionRequest reject = new RejectPermissionRequest(users, requests, clock);
+    private final ApprovePermissionRequest approve = new ApprovePermissionRequest(users, requests, grants, clock, notifier);
+    private final RejectPermissionRequest reject = new RejectPermissionRequest(users, requests, clock, notifier);
     private final PermissionChecker checker = new PermissionChecker(grants);
 
     {

@@ -47,4 +47,39 @@ class EmailTemplatesTest {
         assertThat(templates.render(EmailTemplates.PASSWORD_RESET, "secret-token-value").toString())
                 .doesNotContain("secret-token-value");
     }
+
+    // ---- P5: correo funcional ----
+
+    @Test
+    void everyFunctionalNotificationTypeHasAFunctionalTemplateUsingItsTitleAndMessage() {
+        for (com.stockflow.notification.domain.NotificationType type
+                : com.stockflow.notification.domain.NotificationType.values()) {
+            assertThat(templates.isFunctional(type.name())).as(type.name()).isTrue();
+
+            var rendered = templates.renderFunctional(type.name(),
+                    new FunctionalEmailPayload("Titulo del aviso", "Cuerpo del aviso. Motivo: literal"));
+
+            assertThat(rendered.subject()).isEqualTo("Titulo del aviso");
+            assertThat(rendered.body()).startsWith("Cuerpo del aviso. Motivo: literal")
+                    .contains("preferencias de notificaciones");
+        }
+    }
+
+    @Test
+    void essentialTemplatesAreNotFunctionalSoThePreferenceNeverAppliesToThem() {
+        assertThat(templates.isFunctional(EmailTemplates.ACTIVATION)).isFalse();
+        assertThat(templates.isFunctional(EmailTemplates.PASSWORD_RESET)).isFalse();
+        assertThat(templates.isFunctional("SOMETHING_ELSE")).isFalse();
+    }
+
+    @Test
+    void aFunctionalRenderRejectsEssentialOrUnknownKeys() {
+        var payload = new FunctionalEmailPayload("t", "m");
+
+        assertThatThrownBy(() -> templates.renderFunctional(EmailTemplates.ACTIVATION, payload))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> templates.renderFunctional("SOMETHING_ELSE", payload))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(payload.toString()).doesNotContain("m]").contains("redacted");
+    }
 }

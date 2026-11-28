@@ -33,14 +33,14 @@ public class CreatePurchaseOrder {
         this.clock = clock;
     }
 
-    /** {@code supplierId} puede ser nulo, como en {@link PurchaseOrder#create}. */
+    /** {@code supplierId} puede ser nulo; el propietario es siempre el actor autenticado que crea la orden. */
     @Transactional
     public UUID create(UUID actorId, UUID supplierId) {
         PurchaseOrderActors.requireActiveUser(users, actorId);
         if (!permissions.hasPermission(actorId, PURCHASE_ORDER_CREATE)) {
             throw new PurchaseOrderPermissionDeniedException();
         }
-        PurchaseOrder order = PurchaseOrder.create(UUID.randomUUID(), supplierId, clock.instant());
+        PurchaseOrder order = PurchaseOrder.create(UUID.randomUUID(), supplierId, actorId, clock.instant());
         orders.save(order);
         return order.id();
     }

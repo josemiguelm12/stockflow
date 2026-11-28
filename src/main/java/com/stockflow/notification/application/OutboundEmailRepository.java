@@ -12,6 +12,13 @@ public interface OutboundEmailRepository {
 
     void insertPending(UUID id, String recipient, String templateKey, EncryptedPayload payload, Instant enqueuedAt);
 
+    /**
+     * Como {@link #insertPending} pero idempotente por {@code dedupeKey} (evento + destinatario + canal): devuelve
+     * false, sin insertar, si ya existe una fila con esa clave (en cualquier estado).
+     */
+    boolean insertPendingIfAbsent(UUID id, String recipient, String templateKey, EncryptedPayload payload,
+                                  Instant enqueuedAt, String dedupeKey);
+
     /** Reclama el siguiente PENDING con FOR UPDATE SKIP LOCKED; requiere una transacción activa. */
     Optional<PendingEmail> claimNextPending(Collection<UUID> excludedIds);
 

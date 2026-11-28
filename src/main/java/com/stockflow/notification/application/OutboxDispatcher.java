@@ -67,8 +67,12 @@ public class OutboxDispatcher {
         }
         OutboundEmailRepository.PendingEmail email = next.get();
         try {
-            ActivationPayload payload = json.readValue(cipher.decrypt(email.payload()), ActivationPayload.class);
-            var rendered = templates.render(email.templateKey(), payload.token());
+            byte[] plaintext = cipher.decrypt(email.payload());
+            var rendered = templates.isFunctional(email.templateKey())
+                    ? templates.renderFunctional(email.templateKey(),
+                            json.readValue(plaintext, FunctionalEmailPayload.class))
+                    : templates.render(email.templateKey(),
+                            json.readValue(plaintext, ActivationPayload.class).token());
             sender.send(email.recipient(), rendered.subject(), rendered.body());
         } catch (RuntimeException e) {
             // Solo id y tipo de error: el mensaje podría incluir direcciones o fragmentos del enlace.

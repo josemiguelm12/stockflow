@@ -6,13 +6,17 @@ import com.stockflow.inventory.domain.InvalidPurchaseOrderTransitionException;
 import com.stockflow.inventory.domain.PurchaseOrder;
 import com.stockflow.inventory.domain.PurchaseOrderStatus;
 import com.stockflow.inventory.domain.PurchaseOrderSupplierRequiredException;
+import com.stockflow.support.MutableClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,6 +27,7 @@ import static com.stockflow.inventory.domain.PurchaseOrderStatus.DRAFT;
 import static com.stockflow.inventory.domain.PurchaseOrderStatus.RECEIVED;
 import static com.stockflow.inventory.domain.PurchaseOrderStatus.SUBMITTED;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -37,12 +42,16 @@ class PurchaseOrderTransitionUseCasesTest {
     private static final UUID DISABLED_STANDARD = UUID.fromString("00000000-0000-0000-0000-00000000c304");
     private static final UUID UNKNOWN_USER = UUID.fromString("00000000-0000-0000-0000-00000000c305");
     private static final UUID SUPPLIER = UUID.fromString("00000000-0000-0000-0000-00000000d301");
+    private static final UUID OWNER = UUID.fromString("00000000-0000-0000-0000-00000000c306");
     private static final Instant CREATED_AT = Instant.parse("2026-05-01T10:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-05-02T10:00:00Z");
 
     private final UserAdministrationRepository users = mock(UserAdministrationRepository.class);
     private final FakeOrders orders = new FakeOrders();
-    private final SubmitPurchaseOrder submit = new SubmitPurchaseOrder(users, orders);
-    private final ApprovePurchaseOrder approve = new ApprovePurchaseOrder(users, orders);
+    private final MutableClock clock = new MutableClock(NOW);
+    private final RecordingNotifier notifier = new RecordingNotifier();
+    private final SubmitPurchaseOrder submit = new SubmitPurchaseOrder(users, orders, clock);
+    private final ApprovePurchaseOrder approve = new ApprovePurchaseOrder(users, orders, clock, notifier);
     private final ReceivePurchaseOrder receive = new ReceivePurchaseOrder(users, orders);
     private final CancelPurchaseOrder cancel = new CancelPurchaseOrder(users, orders);
 
@@ -144,6 +153,70 @@ class PurchaseOrderTransitionUseCasesTest {
 
         // Assert
         assertUnchanged(thrown, InvalidPurchaseOrderTransitionException.class, id, from);
+        assertThat(notifier.calls).as("an invalid transition never notifies").isEmpty();
+    }
+
+    // ---- P5: propietario, fechas y aviso de aprobación ----
+
+    @Test
+    void submittingRecordsSubmittedAtAndKeepsTheOwner() {
+        UUID id = orders.seed(DRAFT, SUPPLIER);
+
+        submit.submit(ADMIN, id);
+
+        assertThat(orders.stored(id).submittedAt()).contains(NOW);
+        assertThat(orders.stored(id).ownerId()).contains(OWNER);
+    }
+
+    @Test
+    void approvingRecordsApprovedAtAndNotifiesTheOwnerOnce() {
+        UUID id = orders.seed(SUBMITTED, SUPPLIER);
+        clock.advance(Duration.ofMinutes(5));
+
+        approve.approve(ADMIN, id);
+
+        assertThat(orders.stored(id).approvedAt()).contains(NOW.plus(Duration.ofMinutes(5)));
+        assertThat(notifier.calls).containsExactly(new Call(id, OWNER));
+    }
+
+    @Test
+    void approvingAHistoricalOrderWithoutOwnerNotifiesNobody() {
+        UUID id = orders.seedHistorical(SUBMITTED, SUPPLIER);
+
+        approve.approve(ADMIN, id);
+
+        assertThat(orders.stored(id).status()).isEqualTo(APPROVED);
+        assertThat(orders.stored(id).ownerId()).isEmpty();
+        assertThat(notifier.calls).isEmpty();
+    }
+
+    @Test
+    void aRepeatedApprovalIsRejectedAndDoesNotNotifyAgain() {
+        UUID id = orders.seed(SUBMITTED, SUPPLIER);
+        approve.approve(ADMIN, id);
+
+        Throwable repeated = catchThrowable(() -> approve.approve(ADMIN, id));
+
+        assertThat(repeated).isInstanceOf(InvalidPurchaseOrderTransitionException.class);
+        assertThat(notifier.calls).hasSize(1);
+    }
+
+    @Test
+    void anUnauthorizedApproveDoesNotNotify() {
+        UUID id = orders.seed(SUBMITTED, SUPPLIER);
+
+        assertThat(catchThrowable(() -> approve.approve(STANDARD, id)))
+                .isInstanceOf(PurchaseOrderActorNotAuthorizedException.class);
+
+        assertThat(notifier.calls).isEmpty();
+    }
+
+    @Test
+    void aNotifierFailurePropagatesSoTheTransactionRollsBack() {
+        UUID id = orders.seed(SUBMITTED, SUPPLIER);
+        notifier.failing = true;
+
+        assertThatThrownBy(() -> approve.approve(ADMIN, id)).isInstanceOf(IllegalStateException.class);
     }
 
     // ---- ReceivePurchaseOrder ----
@@ -317,6 +390,23 @@ class PurchaseOrderTransitionUseCasesTest {
 
     // ---- utilidades ----
 
+    private record Call(UUID orderId, UUID ownerId) {
+    }
+
+    private static final class RecordingNotifier implements PurchaseOrderEventNotifier {
+
+        private final List<Call> calls = new ArrayList<>();
+        private boolean failing;
+
+        @Override
+        public void orderApproved(UUID orderId, UUID ownerId) {
+            if (failing) {
+                throw new IllegalStateException("outbox failure (simulated)");
+            }
+            calls.add(new Call(orderId, ownerId));
+        }
+    }
+
     private void user(UUID id, String role, String status) {
         when(users.find(id)).thenReturn(Optional.of(new ManagedUser(id, id + "@example.test", role, status, true)));
     }
@@ -336,8 +426,17 @@ class PurchaseOrderTransitionUseCasesTest {
         private final Map<UUID, Integer> locks = new HashMap<>();
 
         UUID seed(PurchaseOrderStatus status, UUID supplierId) {
+            return seed(status, supplierId, OWNER);
+        }
+
+        /** Orden anterior a P5: sin propietario ni fechas. */
+        UUID seedHistorical(PurchaseOrderStatus status, UUID supplierId) {
+            return seed(status, supplierId, null);
+        }
+
+        private UUID seed(PurchaseOrderStatus status, UUID supplierId, UUID owner) {
             UUID id = UUID.randomUUID();
-            rows.put(id, PurchaseOrder.restore(id, supplierId, status, CREATED_AT));
+            rows.put(id, PurchaseOrder.restore(id, supplierId, owner, status, CREATED_AT, null, null));
             return id;
         }
 
@@ -375,8 +474,9 @@ class PurchaseOrderTransitionUseCasesTest {
         }
 
         private static PurchaseOrder copy(PurchaseOrder order) {
-            return PurchaseOrder.restore(order.id(), order.supplierId().orElse(null), order.status(),
-                    order.createdAt());
+            return PurchaseOrder.restore(order.id(), order.supplierId().orElse(null), order.ownerId().orElse(null),
+                    order.status(), order.createdAt(), order.submittedAt().orElse(null),
+                    order.approvedAt().orElse(null));
         }
     }
 }

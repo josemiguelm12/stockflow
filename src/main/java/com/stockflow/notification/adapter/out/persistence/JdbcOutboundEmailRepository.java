@@ -48,6 +48,27 @@ class JdbcOutboundEmailRepository implements OutboundEmailRepository {
     }
 
     @Override
+    public boolean insertPendingIfAbsent(UUID id, String recipient, String templateKey, EncryptedPayload payload,
+                                         Instant enqueuedAt, String dedupeKey) {
+        return jdbc.sql("""
+                INSERT INTO outbound_emails
+                    (id, recipient_email, template_key, payload_ciphertext, payload_iv, payload_key_id, state,
+                     enqueued_at, dedupe_key)
+                VALUES (:id, :recipient, :template, :ciphertext, :iv, :keyId, 'PENDING', :enqueuedAt, :dedupeKey)
+                ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+                """)
+                .param("id", id)
+                .param("recipient", recipient)
+                .param("template", templateKey)
+                .param("ciphertext", payload.ciphertext())
+                .param("iv", payload.iv())
+                .param("keyId", payload.keyId())
+                .param("enqueuedAt", utc(enqueuedAt))
+                .param("dedupeKey", dedupeKey)
+                .update() > 0;
+    }
+
+    @Override
     public Optional<PendingEmail> claimNextPending(Collection<UUID> excludedIds) {
         boolean exclude = !excludedIds.isEmpty();
         var statement = jdbc.sql(CLAIM.formatted(exclude ? " AND id NOT IN (:excluded)" : ""));

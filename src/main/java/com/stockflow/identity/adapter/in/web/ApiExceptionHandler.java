@@ -13,6 +13,7 @@ import com.stockflow.inventory.application.PurchaseOrderNotFoundException;
 import com.stockflow.inventory.application.PurchaseOrderPermissionDeniedException;
 import com.stockflow.inventory.domain.InvalidPurchaseOrderTransitionException;
 import com.stockflow.inventory.domain.PurchaseOrderSupplierRequiredException;
+import com.stockflow.notification.application.NotificationNotFoundException;
 import com.stockflow.permission.application.PermissionActorNotAuthorizedException;
 import com.stockflow.permission.application.PermissionRequestNotFoundException;
 import com.stockflow.permission.application.PermissionSelfResolutionException;
@@ -124,7 +125,8 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem;
     }
 
-    @ExceptionHandler({PermissionRequestNotFoundException.class, PurchaseOrderNotFoundException.class})
+    @ExceptionHandler({PermissionRequestNotFoundException.class, PurchaseOrderNotFoundException.class,
+            NotificationNotFoundException.class})
     ProblemDetail resourceNotFound() {
         return userNotFound();
     }

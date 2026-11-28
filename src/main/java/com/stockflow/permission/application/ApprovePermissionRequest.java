@@ -23,13 +23,15 @@ public class ApprovePermissionRequest {
     private final PermissionRequestRepository requests;
     private final UserPermissionRepository grants;
     private final Clock clock;
+    private final PermissionEventNotifier notifier;
 
     ApprovePermissionRequest(UserAdministrationRepository users, PermissionRequestRepository requests,
-                             UserPermissionRepository grants, Clock clock) {
+                             UserPermissionRepository grants, Clock clock, PermissionEventNotifier notifier) {
         this.users = users;
         this.requests = requests;
         this.grants = grants;
         this.clock = clock;
+        this.notifier = notifier;
     }
 
     /**
@@ -54,5 +56,6 @@ public class ApprovePermissionRequest {
                 request.id(), now));
         request.apply(actorId, now);
         requests.save(request);
+        notifier.requestApproved(request);
     }
 }
